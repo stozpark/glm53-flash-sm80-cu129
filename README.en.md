@@ -11,7 +11,7 @@ Build and patch bundle for running `zai-org/GLM-5.3-Flash` on NVIDIA A100/A800 (
 - **vLLM PR #54031** for native NoPE `dim_qk=512` `TRITON_MLA_SPARSE` based on `FlashMLASparseImpl`.
 - **Latest pinned PR #47629** for the SM80 FP8 MQA/paged-MQA Triton fallback and long-context correctness fixes.
 - **GLM-5.3 KPool routing patch** so `sparse_attn_indexer_kpool.py` also uses the SM80 Triton fallback, including the MTP `(B,next_n)` seq-lens collapse required by the paged MQA kernel.
-- **A800 reference project** only for the SM80-specific `kpool_compress.py` workaround.
+- **Pinned Ampere backport** (`wtdcode/vllm-backport`) for the software E4M3FN KPool writer and later GLM-5.3 KPoolTail/MTP correctness fixes. The A800 project is retained as historical comparison only.
 - **PR #47644** for the PP pinned-input-buffer race.
 
 `xpu_mla_sparse.py` is intentionally left stock; GLM-5.3 NoPE sparse attention is routed through the #54031-style Triton backend instead.
@@ -35,6 +35,10 @@ Validate kernels on one A100 before loading the full model:
 ```bash
 bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
+
+## Offline source backup
+
+The `source-backup` branch stores pinned source snapshots/reconstruction parts so the build can be recovered if an upstream PR or repository disappears. After checking out that branch, run its reassembly script and point `BACKUP_VENDOR` at the reconstructed directory.
 
 ## vLLM profiles
 
@@ -75,8 +79,11 @@ max_model_len=524288
 max_num_seqs=8
 max_num_batched_tokens=8192
 KV cache=BF16
-MTP=5
+MTP=3 (default; raise only after A/B validation)
 prefix caching=ON
+sparse_mla_force_mqa=true
+NCCL_ALGO=Ring / NCCL_PROTO=Simple
+custom all-reduce=OFF
 ```
 
 Run:
@@ -98,7 +105,7 @@ For two nodes, prefer TP8 x PP2 over TP16 across nodes. PR #47644 is included fo
 3. prompt longer than 8192 tokens to exercise chunked prefill
 4. Claude Code tool calling
 5. Claude Code WebFetch
-6. MTP5
+6. MTP3; test higher draft counts separately
 7. prefix caching
 8. 256K / 512K / optional 1M
 9. TP8 x PP2
@@ -109,4 +116,5 @@ For two nodes, prefer TP8 x PP2 over TP16 across nodes. PR #47644 is included fo
 - SM80 Triton sparse MLA: PR #47629
 - GLM-5.3 NoPE 512: PR #54031
 - PP pinned-buffer race: PR #47644
-- A800 reference project: https://gitee.com/kill-life/glm5.3-flash-deployment-a800
+- Ampere GLM-5.3 backport: https://github.com/wtdcode/vllm-backport
+- A800 historical comparison: https://gitee.com/kill-life/glm5.3-flash-deployment-a800
