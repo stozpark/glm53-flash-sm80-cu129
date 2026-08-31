@@ -25,12 +25,13 @@ jobs:
           set -euxo pipefail
           PR47629=064801dd2bc6ac2e265dc3fa1f5d803d71bde25d
           PR54031=b325d908656d05e2a650ec60666ccec6f4f3eb0c
+          PR47644=79dba7a8d83d69e0ce1b128573a1b61768eeef4e
           BACKPORT=0ef4bff219c098d48cf16d3d63ebef329e9b74b0
           BASE=487ecf187
 
-          rm -rf backup/vendor backup/base487 backup/backport-reference backup/a800-reference
+          rm -rf backup/vendor backup/base487 backup/backport-reference backup/a800-reference backup/pr-diffs
           mkdir -p backup/vendor/pr47629 backup/vendor/pr54031 backup/vendor/backport
-          mkdir -p backup/base487 backup/backport-reference
+          mkdir -p backup/base487 backup/backport-reference backup/pr-diffs
 
           get() { mkdir -p "$(dirname "$2")"; curl -fL --retry 5 "$1" -o "$2"; }
 
@@ -44,6 +45,11 @@ jobs:
               backup/vendor/backport/fp8_sm80.py
           get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/vllm/models/glm5next/nvidia/ops/kpool_compress.py" \
               backup/vendor/backport/kpool_compress.py
+
+          # Preserve the complete PR diffs as historical/reference material.
+          get "https://github.com/vllm-project/vllm/pull/47629.diff" backup/pr-diffs/47629.diff
+          get "https://github.com/vllm-project/vllm/pull/54031.diff" backup/pr-diffs/54031.diff
+          get "https://github.com/vllm-project/vllm/pull/47644.diff" backup/pr-diffs/47644.diff
 
           # Exact glm53-flash-cu129 source baseline files touched by this project.
           for p in \
@@ -78,6 +84,7 @@ jobs:
           # comparison material only; the actual build no longer depends on Gitee.
           if git clone --depth 1 https://gitee.com/kill-life/glm5.3-flash-deployment-a800.git backup/a800-reference; then
             rm -rf backup/a800-reference/.git
+            rm -f backup/A800_SNAPSHOT_FAILED.txt
           else
             echo 'A800 Gitee snapshot unavailable at backup time.' > backup/A800_SNAPSHOT_FAILED.txt
             rm -rf backup/a800-reference
@@ -87,9 +94,10 @@ jobs:
             echo "BASE=${BASE}"
             echo "PR47629=${PR47629}"
             echo "PR54031=${PR54031}"
+            echo "PR47644=${PR47644}"
             echo "BACKPORT=${BACKPORT}"
             echo
-            find backup/vendor backup/base487 backup/backport-reference -type f -print0 | sort -z | xargs -0 sha256sum
+            find backup/vendor backup/base487 backup/backport-reference backup/pr-diffs -type f -print0 | sort -z | xargs -0 sha256sum
           } > backup/SHA256SUMS.txt
 
       - name: Commit snapshot
