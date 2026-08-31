@@ -10,6 +10,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
 %files
     vendor /opt/glm53-sm80/vendor
     patch_runtime.py /opt/glm53-sm80/patch_runtime.py
+    patch_glm53_tail.py /opt/glm53-sm80/patch_glm53_tail.py
     verify_static.py /opt/glm53-sm80/verify_static.py
 
 %post
@@ -26,6 +27,10 @@ From: vllm/vllm-openai:glm53-flash-cu129
       --vllm-root "${VLLM_ROOT}" \
       --vendor /opt/glm53-sm80/vendor \
       --backup-root /opt/glm53-sm80/stock
+
+    python /opt/glm53-sm80/patch_glm53_tail.py \
+      --vllm-root "${VLLM_ROOT}" \
+      --vendor /opt/glm53-sm80/vendor
 
     python /opt/glm53-sm80/verify_static.py --vllm-root "${VLLM_ROOT}"
 
