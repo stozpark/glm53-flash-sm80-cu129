@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.sif
+*.log
+*.pid
+vendor/*
+!vendor/.gitkeep
+!vendor/MANIFEST.txt
+.DS_Store
