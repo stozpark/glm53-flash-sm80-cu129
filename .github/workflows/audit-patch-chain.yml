@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/audit-patch-chain.yml'
+      - 'patch_47644_compat.py'
       - 'patch_runtime.py'
       - 'patch_glm53_tail.py'
       - 'verify_static.py'
@@ -60,6 +61,7 @@ jobs:
       - name: Apply complete patch chain to exact base snapshot
         run: |
           set -euxo pipefail
+          python main/patch_47644_compat.py --vllm-root /tmp/vllm487
           python main/patch_runtime.py \
             --vllm-root /tmp/vllm487 \
             --vendor /tmp/vendor \
