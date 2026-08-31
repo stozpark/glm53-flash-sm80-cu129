@@ -1,0 +1,63 @@
+name: Audit full patch chain against pinned base
+
+on:
+  push:
+    branches: [source-backup]
+    paths:
+      - '.github/workflows/audit-patch-chain.yml'
+      - 'patch_runtime.py'
+      - 'patch_glm53_tail.py'
+      - 'verify_static.py'
+      - 'backup/**'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: source-backup
+
+      - name: Unit tests for text backports
+        run: |
+          set -euxo pipefail
+          python tests/test_patch_runtime_unit.py
+          python tests/test_patch_glm53_tail_unit.py
+
+      - name: Reconstruct exact glm53-flash-cu129 source subset
+        run: |
+          set -euxo pipefail
+          rm -rf /tmp/vllm487 /tmp/vendor
+          mkdir -p /tmp/vllm487 /tmp/vendor
+          cp -a backup/base487/vllm/. /tmp/vllm487/
+          # patch_runtime only needs this marker to identify the package root.
+          : > /tmp/vllm487/__init__.py
+          cp -a backup/vendor/. /tmp/vendor/
+          mkdir -p /tmp/vendor/a800
+          cp /tmp/vendor/backport/kpool_compress.py /tmp/vendor/a800/kpool_compress.py
+
+      - name: Apply complete patch chain
+        run: |
+          set -euxo pipefail
+          python patch_runtime.py \
+            --vllm-root /tmp/vllm487 \
+            --vendor /tmp/vendor \
+            --backup-root /tmp/stock487
+          python patch_glm53_tail.py \
+            --vllm-root /tmp/vllm487 \
+            --vendor /tmp/vendor
+          python verify_static.py --vllm-root /tmp/vllm487
+
+      - name: Verify backup checksums
+        run: |
+          set -euxo pipefail
+          # SHA256SUMS contains paths relative to the repository root.
+          sha256sum -c backup/SHA256SUMS.txt
+
+      - name: Report audited files
+        run: |
+          echo 'FULL_PATCH_CHAIN_SOURCE_AUDIT=PASS'
+          find /tmp/vllm487 -type f \( -name '*.py' -o -name '*.txt' \) | sort | head -100
