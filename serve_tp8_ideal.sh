@@ -17,13 +17,15 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-524288}"
 MAX_SEQS="${MAX_SEQS:-8}"
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-8192}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm5.3-flash}"
+NUM_SPEC_TOKENS="${NUM_SPEC_TOKENS:-3}"
 LOG_FILE="${LOG_FILE:-glm53_sm80_ideal_${PORT}.log}"
 
 mkdir -p "${CACHE_DIR}/vllm" "${CACHE_DIR}/triton" "${CACHE_DIR}/hf"
 
 if command -v apptainer >/dev/null 2>&1; then R=apptainer; else R=singularity; fi
 
-# Target single-node operating profile: MTP5 + prefix caching ON.
+# Target single-node operating profile: MTP3 + prefix caching ON.
+# MTP3 is the current Ampere/A100-validated default; raise NUM_SPEC_TOKENS only after A/B validation.
 # Do not use this until the initial correctness profile passes WebFetch/tool tests.
 nohup "${R}" exec --nv \
   --bind "${MODEL_HOST_PATH}:${MODEL_CONTAINER_PATH}:ro" \
@@ -45,6 +47,8 @@ nohup "${R}" exec --nv \
   --env VLLM_CUDA_COMPATIBILITY_PATH=/usr/local/cuda-12.9/compat \
   --env LD_LIBRARY_PATH=/usr/local/cuda-12.9/compat:/usr/local/cuda/lib64 \
   --env NCCL_NVLS_ENABLE=0 \
+  --env NCCL_ALGO=Ring \
+  --env NCCL_PROTO=Simple \
   "${SIF_PATH}" \
   vllm serve "${MODEL_CONTAINER_PATH}" \
     --served-model-name "${SERVED_MODEL_NAME}" \
@@ -61,8 +65,10 @@ nohup "${R}" exec --nv \
     --max-num-seqs "${MAX_SEQS}" \
     --max-num-batched-tokens "${MAX_BATCHED_TOKENS}" \
     --kv-cache-dtype bfloat16 \
+    --attention-config '{"sparse_mla_force_mqa": true}' \
     --enable-prefix-caching \
-    --speculative-config '{"method":"mtp","num_speculative_tokens":5}' \
+    --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${NUM_SPEC_TOKENS}}" \
+    --disable-custom-all-reduce \
     --moe-backend marlin \
     --no-enable-flashinfer-autotune \
     "$@" \
