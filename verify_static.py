@@ -27,6 +27,11 @@ def main() -> None:
         "kpool": root / "model_executor/layers/sparse_attn_indexer_kpool.py",
         "kpool_compress": root / "models/glm5next/nvidia/ops/kpool_compress.py",
         "runner": root / "v1/worker/gpu_model_runner.py",
+        "model_runner": root / "v1/worker/gpu/model_runner.py",
+        "block_table": root / "v1/worker/gpu/block_table.py",
+        "mamba_hybrid": root / "v1/worker/gpu/model_states/mamba_hybrid.py",
+        "speculator": root / "v1/worker/gpu/spec_decode/speculator.py",
+        "fp8_sm80": root / "v1/attention/ops/fp8_sm80.py",
     }
     for name, p in files.items():
         if not p.exists():
@@ -65,6 +70,30 @@ def main() -> None:
 
     t = files["runner"].read_text()
     must(t, "if self.vllm_config.max_concurrent_batches > 1:", "#47644 PP race fix")
+
+    t = files["indexer_meta"].read_text()
+    must(t, "out_full=self.tail_slot_mapping_buffer", "KPoolTail persistent mapping")
+    must(t, "out_full.fill_(-1)", "KPoolTail padded sentinel")
+    must(t, "seq_lens[:num_decodes] // self.compress_ratio", "MTP padded seq_lens fix")
+    must(t, "KpoolTailMetadataBuilder requires CommonAttentionMetadata.positions", "KPoolTail positions contract")
+
+    t = files["model_runner"].read_text()
+    must(t, "slot_mapping_enabled=slot_mapping_enabled", "KPoolTail generic slot-map exclusion wiring")
+
+    t = files["block_table"].read_text()
+    must(t, "enabled = tl.load(slot_mapping_enabled + group_id) != 0", "KPoolTail generic slot-map kernel skip")
+
+    t = files["mamba_hybrid"].read_text()
+    must(t, "positions=input_batch.positions", "hybrid positions propagation")
+
+    t = files["speculator"].read_text()
+    must(t, "positions=self.input_buffers.positions[:num_tokens_padded]", "MTP draft positions")
+
+    t = files["fp8_sm80"].read_text()
+    must(t, "def _encode_e4m3fn_u8", "SM80 software FP8 encoder")
+
+    t = files["kpool_compress"].read_text()
+    must(t, "native_fp8_cast_supported", "KPool SM80 FP8 write fallback")
 
     print("STATIC_VERIFY=PASS")
     print(f"VLLM_ROOT={root}")
