@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Triton fallback for DeepGEMM's fp8_mqa_logits / fp8_paged_mqa_logits."""
+
+import torch
+
+from vllm.triton_utils import tl, triton
+
+# Paged decode: num_warps=4 dominated on A100/SM80 across {2,4,8}; the others
+# were 1.5–1.7× slower at (num_heads=32, head_dim=128, block_size=64), so
+# narrow the sweep to keep autotune from latching onto a bad pick under noise.
+_PAGED_AUTOTUNE_CONFIGS = [
+    triton.Config({}, num_warps=4, num_stages=ns) for ns in (2, 4)
+]
+
+# Prefill kernel adds BLOCK_N as a free tile axis. num_warps=8 was 1.5–3×
+# worse than {2,4} across the sweep; keep BLOCK_N ∈ {32, 64, 128} so autotune
+# can pick per shape (BN=128 wins for GLM-5.1 long chunks).
+_PREFILL_AUTOTUNE_CONFIGS = [
+    triton.Config({"BLOCK_N": bn}, num_warps=nw, num_stages=ns)
+    for bn in (32, 64, 128)
+    for nw in (2, 4)
+    for ns in (2, 4)
+]
+
+# Warmup shape mirrors the chunked-prefill regime (small M, long N) so
+# autotune picks a tile sized for real serving rather than a launch-overhead-
+# dominated dummy grid.
+_PREFILL_WARMUP_M = 8
+_PREFILL_WARMUP_N = 8192
+
+
+_E4M3FN_BF16_LUT_CACHE: dict[torch.device, torch.Tensor] = {}
+
+
+def _get_e4m3fn_bf16_lut(device: torch.device) -> torch.Tensor:
+    lut = _E4M3FN_BF16_LUT_CACHE.get(device)
+    if lut is not None:
+        return lut
+    lut = (
+        torch.arange(256, dtype=torch.uint8, device=device)
+        .view(torch.float8_e4m3fn)
+        .to(torch.bfloat16)
+    )
+    lut[0x7F] = 480.0
+    lut[0xFF] = -480.0
+    _E4M3FN_BF16_LUT_CACHE[device] = lut
+    return lut
+
+
+@triton.jit
+def _decode_e4m3fn_bf16_lut(u, lut_ptr):
+    return tl.load(lut_ptr + u.to(tl.uint32))
+
+
+@triton.autotune(
+    configs=_PAGED_AUTOTUNE_CONFIGS,
+    key=["num_heads", "head_dim", "block_size"],
+)
+@triton.jit
+def _fp8_paged_mqa_logits_kernel(
+    q_ptr,
+    kv_fp8_ptr,
+    kv_scale_ptr,
+    weights_ptr,
+    fp8_lut_ptr,
+    context_lens_ptr,
+    block_tables_ptr,
+    logits_ptr,
+    stride_q_b,
+    stride_q_n,
+    stride_q_h,
+    stride_q_d,
+    stride_kvf_block,
+    stride_kvf_s,
+    stride_kvf_d,
+    stride_kvs_block,
+    stride_kvs_s,
+    stride_w_t,
+    stride_w_h,
+    stride_bt_b,
+    stride_bt_k,
+    stride_l_t,
+    stride_l_n,
+    next_n: tl.constexpr,
+    num_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    block_size: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    token_id = tl.program_id(0)
+    block_rk = tl.program_id(1)
+
+    batch_id = token_id // next_n
+    next_n_id = token_id % next_n
+
+    context_len = tl.load(context_lens_ptr + batch_id)
+    if block_rk * block_size >= context_len:
+        return
+
+    q_offset = context_len - next_n + next_n_id
+
+    # int64: unified-KV-pool layer views carry a large block stride (~1e6
+    # elements), so int32 `block_idx * stride` wraps once a batch touches
+    # roughly >2k pool blocks (long context or concurrent sequences).
+    block_idx = tl.load(
+        block_tables_ptr + batch_id * stride_bt_b + block_rk * stride_bt_k
+    ).to(tl.int64)
+
+    offs_h = tl.arange(0, BLOCK_H)
+    offs_d = tl.arange(0, BLOCK_D)
+    offs_n = tl.arange(0, BLOCK_N)
+    mask_h = offs_h < num_heads
+    mask_d = offs_d < head_dim
+    mask_n = offs_n < block_size
+
+    q_base = q_ptr + batch_id * stride_q_b + next_n_id * stride_q_n
+    q_byte = tl.load(
+        q_base + offs_h[:, None] * stride_q_h + offs_d[None, :] * stride_q_d,
+        mask=mask_h[:, None] & mask_d[None, :],
+        other=0,
+    )
+    q = _decode_e4m3fn_bf16_lut(q_byte, fp8_lut_ptr)
+
+    kvf_base = kv_fp8_ptr + block_idx * stride_kvf_block
+    k_byte = tl.load(
+        kvf_base + offs_n[:, None] * stride_kvf_s + offs_d[None, :] * stride_kvf_d,
+        mask=mask_n[:, None] & mask_d[None, :],
+        other=0,
+    )
+    kvs_base = kv_scale_ptr + block_idx * stride_kvs_block
+    k_scale = tl.load(
+        kvs_base + offs_n * stride_kvs_s,
+        mask=mask_n,
+        other=0.0,
+    )
+    k = _decode_e4m3fn_bf16_lut(k_byte, fp8_lut_ptr)
+    # Scale in fp32 after the dot to avoid an extra bf16 round-trip on K.
+    s = tl.dot(q, tl.trans(k)) * k_scale[None, :]
+
+    w = tl.load(
+        weights_ptr + token_id * stride_w_t + offs_h * stride_w_h,
+        mask=mask_h,
+        other=0.0,
+    )
+    s = tl.where(s > 0, s, 0.0) * w[:, None]
+    out = tl.sum(s, axis=0)
