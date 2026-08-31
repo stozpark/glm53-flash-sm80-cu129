@@ -1,0 +1,103 @@
+name: Snapshot pinned upstream sources
+
+on:
+  push:
+    branches: [source-backup]
+    paths:
+      - '.github/workflows/snapshot-sources.yml'
+      - 'backup/SNAPSHOT_TRIGGER'
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: source-backup
+          fetch-depth: 0
+
+      - name: Fetch pinned source snapshots
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PR47629=064801dd2bc6ac2e265dc3fa1f5d803d71bde25d
+          PR54031=b325d908656d05e2a650ec60666ccec6f4f3eb0c
+          BACKPORT=0ef4bff219c098d48cf16d3d63ebef329e9b74b0
+          BASE=487ecf187
+
+          rm -rf backup/vendor backup/base487 backup/backport-reference backup/a800-reference
+          mkdir -p backup/vendor/pr47629 backup/vendor/pr54031 backup/vendor/backport
+          mkdir -p backup/base487 backup/backport-reference
+
+          get() { mkdir -p "$(dirname "$2")"; curl -fL --retry 5 "$1" -o "$2"; }
+
+          get "https://raw.githubusercontent.com/thomaslwang/vllm/${PR47629}/vllm/v1/attention/ops/mqa_logits_triton.py" \
+              backup/vendor/pr47629/mqa_logits_triton.py
+          get "https://raw.githubusercontent.com/ima-helikoptaaa/vllm/${PR54031}/vllm/v1/attention/backends/mla/triton_mla_sparse.py" \
+              backup/vendor/pr54031/triton_mla_sparse.py
+          get "https://raw.githubusercontent.com/ima-helikoptaaa/vllm/${PR54031}/vllm/v1/attention/ops/triton_mla_sparse_kernel.py" \
+              backup/vendor/pr54031/triton_mla_sparse_kernel.py
+          get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/vllm/v1/attention/ops/fp8_sm80.py" \
+              backup/vendor/backport/fp8_sm80.py
+          get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/vllm/models/glm5next/nvidia/ops/kpool_compress.py" \
+              backup/vendor/backport/kpool_compress.py
+
+          # Exact glm53-flash-cu129 source baseline files touched by this project.
+          for p in \
+            vllm/platforms/cuda.py \
+            vllm/v1/attention/backends/registry.py \
+            vllm/v1/attention/backends/mla/indexer.py \
+            vllm/model_executor/layers/sparse_attn_indexer_kpool.py \
+            vllm/models/glm5next/nvidia/ops/kpool_compress.py \
+            vllm/v1/worker/gpu_model_runner.py \
+            vllm/v1/worker/gpu/model_runner.py \
+            vllm/v1/worker/gpu/block_table.py \
+            vllm/v1/worker/gpu/model_states/mamba_hybrid.py \
+            vllm/v1/worker/gpu/spec_decode/speculator.py \
+            vllm/v1/kv_cache_interface.py; do
+            get "https://raw.githubusercontent.com/vllm-project/vllm/${BASE}/${p}" "backup/base487/${p}"
+          done
+
+          # Keep full reference versions containing the later Ampere fixes too.
+          for p in \
+            vllm/v1/attention/backends/mla/indexer.py \
+            vllm/model_executor/layers/sparse_attn_indexer_kpool.py \
+            vllm/v1/attention/ops/fp8_sm80.py \
+            vllm/models/glm5next/nvidia/ops/kpool_compress.py \
+            vllm/v1/worker/gpu/model_runner.py \
+            vllm/v1/worker/gpu/block_table.py \
+            vllm/v1/worker/gpu/model_states/mamba_hybrid.py \
+            vllm/v1/worker/gpu/spec_decode/speculator.py; do
+            get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/${p}" "backup/backport-reference/${p}"
+          done
+
+          # Historical A800 implementation. Failure here is non-fatal because it is
+          # comparison material only; the actual build no longer depends on Gitee.
+          if git clone --depth 1 https://gitee.com/kill-life/glm5.3-flash-deployment-a800.git backup/a800-reference; then
+            rm -rf backup/a800-reference/.git
+          else
+            echo 'A800 Gitee snapshot unavailable at backup time.' > backup/A800_SNAPSHOT_FAILED.txt
+            rm -rf backup/a800-reference
+          fi
+
+          {
+            echo "BASE=${BASE}"
+            echo "PR47629=${PR47629}"
+            echo "PR54031=${PR54031}"
+            echo "BACKPORT=${BACKPORT}"
+            echo
+            find backup/vendor backup/base487 backup/backport-reference -type f -print0 | sort -z | xargs -0 sha256sum
+          } > backup/SHA256SUMS.txt
+
+      - name: Commit snapshot
+        shell: bash
+        run: |
+          set -eux
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backup
+          git commit -m 'backup: snapshot pinned GLM-5.3 SM80 sources [skip ci]' || exit 0
+          git push origin HEAD:source-backup
