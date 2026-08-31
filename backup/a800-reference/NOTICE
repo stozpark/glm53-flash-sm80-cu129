@@ -1,0 +1,23 @@
+GLM-5.3-Flash on 8x A800 (sm_80)
+Copyright 2025 the project authors
+
+This project contains code derived from:
+
+* vLLM (https://github.com/vllm-project/vllm), licensed under the
+  Apache License, Version 2.0.
+  The files under `_port/patches_glm53_sm80/` are modified copies of
+  vLLM source files (backend registry, platform selection, MLA sparse
+  attention backend, indexer and kpool-compression ops), adapted to run
+  GLM-5.3-Flash on NVIDIA Ampere (sm_80) GPUs.
+
+* The TRITON_MLA_SPARSE kernels under
+  `_port/patches_glm53_sm80/vllm/v1/attention/ops/` originate from
+  vLLM pull request #38476 / #47629 (community contribution), itself
+  licensed under the Apache License, Version 2.0.
+
+The deployment scripts, Dockerfile, probes and documentation in this
+repository are original work, licensed under the Apache License,
+Version 2.0.
+
+GLM-5.3-Flash model weights are distributed separately by Z.ai under
+their own license terms and are NOT included in this repository.

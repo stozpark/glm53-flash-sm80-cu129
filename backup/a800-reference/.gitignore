@@ -1,0 +1,15 @@
+# --- runtime artifacts ---
+vllm_cache/
+/models/
+env.local
+
+# --- reference extracts (reproducible from the base images, not needed in repo) ---
+_port/donor/
+_port/recipient/
+
+# --- python ---
+__pycache__/
+*.pyc
+
+# --- local-only blog drafts (not part of the open-source repo) ---
+/blog/

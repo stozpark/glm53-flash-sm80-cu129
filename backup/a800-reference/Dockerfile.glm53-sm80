@@ -1,0 +1,37 @@
+# GLM-5.3-Flash on 8x A800 (sm80) — vLLM dev20051 (glm53-flash) + SM80 sparse-MLA port
+#
+# Pure-Python overlay derived from the proven v0.26.0-glm52-sm80 recipe
+# (PR #47629 TRITON_MLA_SPARSE, see ../vllm_glm_5.2), adapted to the newer
+# glm53-flash codebase:
+#   * triton_mla_sparse_kernel.py / mqa_logits_triton.py: verbatim PR ops.
+#   * xpu_mla_sparse.py: upstream file + graft of decode/prefill count fields
+#     consumed by the unified MLA forward / DSA indexer.
+#   * triton_mla_sparse.py: PR backend + head-size dispatch — the split-KV fast
+#     kernel serves the 576 rope layout; GLM-5.3-Flash's 512 NoPE layout routes
+#     to the upstream generic Triton interface with block_dpe=0.
+#   * registry.py / platforms/cuda.py: register TRITON_MLA_SPARSE and append it
+#     to the non-Hopper NoPE-sparse candidate lists.
+FROM vllm/vllm-openai:glm53-flash
+
+COPY _port/patches_glm53_sm80/vllm/platforms/cuda.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/platforms/cuda.py
+COPY _port/patches_glm53_sm80/vllm/v1/attention/backends/registry.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/registry.py
+COPY _port/patches_glm53_sm80/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/triton_mla_sparse.py
+COPY _port/patches_glm53_sm80/vllm/v1/attention/backends/mla/xpu_mla_sparse.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/xpu_mla_sparse.py
+COPY _port/patches_glm53_sm80/vllm/v1/attention/ops/triton_mla_sparse_kernel.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
+COPY _port/patches_glm53_sm80/vllm/v1/attention/ops/mqa_logits_triton.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/ops/mqa_logits_triton.py
+COPY _port/patches_glm53_sm80/vllm/models/glm5next/nvidia/ops/kpool_compress.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/ops/kpool_compress.py
+# SM80 deep_gemm bypass: indexer metadata gate + Triton MQA-logits routing.
+COPY _port/patches_glm53_sm80/vllm/v1/attention/backends/mla/indexer.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/indexer.py
+COPY _port/patches_glm53_sm80/vllm/model_executor/layers/sparse_attn_indexer.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/sparse_attn_indexer.py
+# GLM-5.3's actual indexer op (kpool variant): same SM80 deep_gemm bypass.
+COPY _port/patches_glm53_sm80/vllm/model_executor/layers/sparse_attn_indexer_kpool.py \
+     /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/sparse_attn_indexer_kpool.py
