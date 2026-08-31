@@ -105,7 +105,7 @@ PP batch queue에서 CPU pinned input buffer가 다음 step에 의해 너무 일
 ### 1. 인터넷 가능한 머신에서 vendor source 준비
 
 ```bash
-./prepare_vendor.sh
+bash ./prepare_vendor.sh
 ```
 
 고정되는 upstream:
@@ -121,13 +121,13 @@ A800    실행 시 master SHA를 해석하여 vendor/MANIFEST.txt에 고정
 ### 2. SIF 생성
 
 ```bash
-./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
+bash ./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
 fakeroot가 필요하면:
 
 ```bash
-BUILD_FLAGS='--fakeroot' ./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
+BUILD_FLAGS='--fakeroot' bash ./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
 ### 3. A100에서 kernel 검증
@@ -135,7 +135,7 @@ BUILD_FLAGS='--fakeroot' ./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
 모델을 로딩하기 전에 먼저 실행하십시오.
 
 ```bash
-./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
+bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
 검증 항목:
@@ -182,7 +182,7 @@ serve_tp8.sh
 ```bash
 MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
 SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
-PROFILE=initial ./serve_tp8.sh
+PROFILE=initial bash ./serve_tp8.sh
 ```
 
 또는 직접:
@@ -190,7 +190,7 @@ PROFILE=initial ./serve_tp8.sh
 ```bash
 MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
 SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
-./serve_tp8_initial.sh
+bash ./serve_tp8_initial.sh
 ```
 
 이 프로파일의 목적은 성능이 아니라 다음 문제를 분리하는 것입니다.
@@ -225,7 +225,7 @@ SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
 ```bash
 MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
 SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
-PROFILE=ideal ./serve_tp8.sh
+PROFILE=ideal bash ./serve_tp8.sh
 ```
 
 이 설정은 **목표 운영 설정**이며 새 패치 SIF에서 아직 검증됐다고 가정하지 않습니다. 반드시 initial 프로파일에서 WebFetch/tool-call까지 통과한 뒤 사용하십시오.
@@ -281,7 +281,7 @@ TP8×PP2, MTP OFF
 간단한 API 확인:
 
 ```bash
-./serve_test.sh
+bash ./serve_test.sh
 ```
 
 ## 주의사항
