@@ -1,0 +1,70 @@
+name: Audit full patch chain against pinned base
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/audit-patch-chain.yml'
+      - 'patch_runtime.py'
+      - 'patch_glm53_tail.py'
+      - 'verify_static.py'
+      - 'tests/test_patch_runtime_unit.py'
+      - 'tests/test_patch_glm53_tail_unit.py'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout audited main scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main
+
+      - name: Checkout self-contained backup branch
+        uses: actions/checkout@v4
+        with:
+          ref: source-backup
+          path: source-backup
+
+      - name: Unit tests for text backports
+        working-directory: main
+        run: |
+          set -euxo pipefail
+          python tests/test_patch_runtime_unit.py
+          python tests/test_patch_glm53_tail_unit.py
+
+      - name: Reconstruct exact glm53-flash-cu129 source subset
+        run: |
+          set -euxo pipefail
+          rm -rf /tmp/vllm487 /tmp/vendor /tmp/stock487
+          mkdir -p /tmp/vllm487 /tmp/vendor
+          cp -a source-backup/backup/base487/vllm/. /tmp/vllm487/
+          : > /tmp/vllm487/__init__.py
+          cp -a source-backup/backup/vendor/. /tmp/vendor/
+          mkdir -p /tmp/vendor/a800
+          cp /tmp/vendor/backport/kpool_compress.py /tmp/vendor/a800/kpool_compress.py
+
+      - name: Apply complete patch chain to exact base snapshot
+        run: |
+          set -euxo pipefail
+          python main/patch_runtime.py \
+            --vllm-root /tmp/vllm487 \
+            --vendor /tmp/vendor \
+            --backup-root /tmp/stock487
+          python main/patch_glm53_tail.py \
+            --vllm-root /tmp/vllm487 \
+            --vendor /tmp/vendor
+          python main/verify_static.py --vllm-root /tmp/vllm487
+
+      - name: Verify source-backup checksums
+        working-directory: source-backup
+        run: |
+          set -euxo pipefail
+          sha256sum -c backup/SHA256SUMS.txt
+
+      - name: Final source audit marker
+        run: echo FULL_PATCH_CHAIN_SOURCE_AUDIT=PASS
