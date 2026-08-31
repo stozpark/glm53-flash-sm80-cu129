@@ -21,19 +21,19 @@ Build and patch bundle for running `zai-org/GLM-5.3-Flash` on NVIDIA A100/A800 (
 Prepare pinned vendor sources on a machine with Internet access:
 
 ```bash
-./prepare_vendor.sh
+bash ./prepare_vendor.sh
 ```
 
 Build the SIF:
 
 ```bash
-./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
+bash ./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
 Validate kernels on one A100 before loading the full model:
 
 ```bash
-./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
+bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
 ## vLLM profiles
@@ -60,7 +60,7 @@ Run:
 ```bash
 MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
 SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
-PROFILE=initial ./serve_tp8.sh
+PROFILE=initial bash ./serve_tp8.sh
 ```
 
 ### Target operating profile
@@ -84,7 +84,7 @@ Run:
 ```bash
 MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
 SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
-PROFILE=ideal ./serve_tp8.sh
+PROFILE=ideal bash ./serve_tp8.sh
 ```
 
 The 512K profile is a practical target for A100 80GB x8. Validate 1M context separately after 512K is stable.
