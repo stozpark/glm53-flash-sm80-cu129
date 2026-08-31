@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import py_compile
+from pathlib import Path
+
+
+def must(text: str, needle: str, label: str) -> None:
+    if needle not in text:
+        raise RuntimeError(f"verification failed: {label}: missing {needle!r}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--vllm-root", required=True)
+    args = ap.parse_args()
+    root = Path(args.vllm_root).resolve()
+
+    files = {
+        "registry": root / "v1/attention/backends/registry.py",
+        "cuda": root / "platforms/cuda.py",
+        "backend": root / "v1/attention/backends/mla/triton_mla_sparse.py",
+        "kernel": root / "v1/attention/ops/triton_mla_sparse_kernel.py",
+        "mqa": root / "v1/attention/ops/mqa_logits_triton.py",
+        "indexer_meta": root / "v1/attention/backends/mla/indexer.py",
+        "kpool": root / "model_executor/layers/sparse_attn_indexer_kpool.py",
+        "kpool_compress": root / "models/glm5next/nvidia/ops/kpool_compress.py",
+        "runner": root / "v1/worker/gpu_model_runner.py",
+    }
+    for name, p in files.items():
+        if not p.exists():
+            raise RuntimeError(f"verification failed: missing {name}: {p}")
+        py_compile.compile(str(p), doraise=True)
+
+    t = files["registry"].read_text()
+    must(t, "TRITON_MLA_SPARSE", "backend registry")
+
+    t = files["cuda"].read_text()
+    must(t, "AttentionBackendEnum.TRITON_MLA_SPARSE", "SM80 backend priority")
+
+    t = files["backend"].read_text()
+    must(t, "class TritonMLASparseImpl(FlashMLASparseImpl)", "#54031 plumbing")
+    must(t, "return [512, 576]", "NoPE/RoPE head sizes")
+    must(t, 'return "TRITON_MLA_SPARSE"', "backend name")
+
+    t = files["kernel"].read_text()
+    must(t, "block_dpe = dim_qk - _BLOCK_DMODEL", "NoPE geometry dispatch")
+    must(t, "if BLOCK_DPE > 0:", "compile-time RoPE pruning")
+    must(t, "e_sum_safe = tl.where", "empty-row NaN guard")
+
+    t = files["mqa"].read_text()
+    must(t, ".to(tl.int64)", "large-stride block index")
+    must(t, "k_offset < context_len", "paged tail bound")
+    must(t, "write -inf here for the early-exit tile", "chunked-prefill dirty buffer fix")
+
+    t = files["indexer_meta"].read_text()
+    must(t, "is_deep_gemm_supported", "architecture-aware metadata gate")
+
+    t = files["kpool"].read_text()
+    must(t, "fp8_mqa_logits_triton", "KPool prefill SM80 fallback")
+    must(t, "fp8_paged_mqa_logits_triton", "KPool decode SM80 fallback")
+    must(t, "seq_lens[:, -1].contiguous()", "MTP 2D seq_lens fix")
+    must(t, "is_deep_gemm_supported", "KPool architecture gate")
+
+    t = files["runner"].read_text()
+    must(t, "if self.vllm_config.max_concurrent_batches > 1:", "#47644 PP race fix")
+
+    print("STATIC_VERIFY=PASS")
+    print(f"VLLM_ROOT={root}")
+    for name, p in files.items():
+        print(f"OK {name}: {p.relative_to(root)}")
+
+
+if __name__ == "__main__":
+    main()
