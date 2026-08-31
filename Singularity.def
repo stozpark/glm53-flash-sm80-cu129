@@ -9,6 +9,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
 
 %files
     vendor /opt/glm53-sm80/vendor
+    patch_47644_compat.py /opt/glm53-sm80/patch_47644_compat.py
     patch_runtime.py /opt/glm53-sm80/patch_runtime.py
     patch_glm53_tail.py /opt/glm53-sm80/patch_glm53_tail.py
     verify_static.py /opt/glm53-sm80/verify_static.py
@@ -22,6 +23,11 @@ From: vllm/vllm-openai:glm53-flash-cu129
     VLLM_ROOT="$(python -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent)')"
     echo "VLLM_ROOT=${VLLM_ROOT}"
     python -c 'import vllm; print("BASE_VLLM_VERSION=" + vllm.__version__)'
+
+    # The GLM day-0 image has a slightly newer blocking-event form than the
+    # original #47644 diff. Apply the exact base-specific compatibility hunk first.
+    python /opt/glm53-sm80/patch_47644_compat.py \
+      --vllm-root "${VLLM_ROOT}"
 
     python /opt/glm53-sm80/patch_runtime.py \
       --vllm-root "${VLLM_ROOT}" \
