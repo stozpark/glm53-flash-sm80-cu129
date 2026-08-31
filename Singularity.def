@@ -1,0 +1,40 @@
+Bootstrap: docker
+From: vllm/vllm-openai:glm53-flash-cu129
+
+%labels
+    Maintainer stozpark
+    Purpose GLM-5.3-Flash CUDA12.9 SM80 sparse-MLA patch
+    PR47629 064801dd2bc6ac2e265dc3fa1f5d803d71bde25d
+    PR54031 b325d908656d05e2a650ec60666ccec6f4f3eb0c
+
+%files
+    vendor /opt/glm53-sm80/vendor
+    patch_runtime.py /opt/glm53-sm80/patch_runtime.py
+    verify_static.py /opt/glm53-sm80/verify_static.py
+
+%post
+    set -eu
+    test -s /opt/glm53-sm80/vendor/MANIFEST.txt
+    echo "=== vendor manifest ==="
+    cat /opt/glm53-sm80/vendor/MANIFEST.txt
+
+    VLLM_ROOT="$(python -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent)')"
+    echo "VLLM_ROOT=${VLLM_ROOT}"
+    python -c 'import vllm; print("BASE_VLLM_VERSION=" + vllm.__version__)'
+
+    python /opt/glm53-sm80/patch_runtime.py \
+      --vllm-root "${VLLM_ROOT}" \
+      --vendor /opt/glm53-sm80/vendor \
+      --backup-root /opt/glm53-sm80/stock
+
+    python /opt/glm53-sm80/verify_static.py --vllm-root "${VLLM_ROOT}"
+
+    # Keep build provenance inside the image.
+    cp /opt/glm53-sm80/vendor/MANIFEST.txt /opt/glm53-sm80/BUILD_MANIFEST.txt
+    python -c 'import vllm; print(vllm.__version__)' > /opt/glm53-sm80/BASE_VLLM_VERSION.txt
+
+%environment
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec vllm "$@"
