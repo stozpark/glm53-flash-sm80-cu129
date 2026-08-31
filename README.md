@@ -10,7 +10,7 @@
 vllm/vllm-openai:glm53-flash-cu129
 ```
 
-> 이 저장소는 공식 vLLM의 GLM-5.3 SM80 지원이 아닙니다. 아직 merge되지 않은 upstream PR과 A800 포팅 코드 중 GLM-5.3 + SM80에 필요한 부분을 선별하여 backport하는 실험적 빌드입니다.
+> 이 저장소는 공식 vLLM의 GLM-5.3 SM80 지원이 아닙니다. 아직 merge되지 않은 upstream PR과 실제 Ampere backport에서 확인된 GLM-5.3 correctness 수정 중 필요한 부분을 선별하여 `glm53-flash-cu129`에 backport하는 실험적 빌드입니다.
 
 ## 목표
 
@@ -81,17 +81,28 @@ triton_seq_lens = (
 
 원본 2-D `seq_lens`는 이후 KPool top-k 처리용으로 그대로 유지합니다.
 
-### 4. A800 프로젝트에서 선택적으로 유지하는 부분
+### 4. Ampere KPool FP8 writer 및 KPoolTail correctness 보강
 
-A800 프로젝트 전체를 복사하지 않습니다.
+실제 빌드 경로에서는 더 이상 Gitee/A800 프로젝트의 `kpool_compress.py`에 의존하지 않습니다. A800 코드는 비교 자료로만 유지합니다.
 
-현재는 SM80에서 GLM-5.3 KPool FP8 cache write를 처리하기 위한 다음 파일만 vendor 대상으로 사용합니다.
+대신 `wtdcode/vllm-backport`의 Ampere 검증 구현에서 다음을 고정 SHA로 가져옵니다.
 
 ```text
-kpool_compress.py
+BACKPORT_SHA = 0ef4bff219c098d48cf16d3d63ebef329e9b74b0
 ```
 
-A800 프로젝트의 `sparse_attn_indexer_kpool.py`는 참고용으로만 내려받고 실제 SIF에는 그대로 덮어쓰지 않습니다.
+주요 내용:
+
+- SM80에서 Triton `fp8e4nv` native cast를 쓰지 않고 E4M3FN byte를 software encode
+- KPool prefill/decode FP8 cache write를 SM80에서 안전하게 처리
+- hybrid model runner에서 KPoolTail metadata에 token positions 전달
+- padded KPoolTail slot은 `-1`로 초기화
+- CUDA graph replay를 위해 KPoolTail slot mapping을 persistent buffer로 유지
+- MTP warmup의 padded `seq_lens`를 active request 수에 맞춰 slice
+- KPoolTail group을 generic position-based slot mapping에서 제외
+- MTP draft attention metadata에도 positions 전달
+
+이 수정들은 GLM-5.3을 Ampere에서 장문/MTP/CUDA graph로 구동하면서 실제로 발견된 OOB·stale pointer·shape mismatch 문제를 대상으로 합니다.
 
 ### 5. PR #47644: PP pinned-buffer race fix
 
@@ -112,8 +123,8 @@ bash ./prepare_vendor.sh
 
 ```text
 #47629  064801dd2bc6ac2e265dc3fa1f5d803d71bde25d
-#54031  b325d908656d05e2a650ec60666ccec6f4f3eb0c
-A800    실행 시 master SHA를 해석하여 vendor/MANIFEST.txt에 고정
+#54031   b325d908656d05e2a650ec60666ccec6f4f3eb0c
+backport 0ef4bff219c098d48cf16d3d63ebef329e9b74b0
 ```
 
 이후 디렉터리 전체를 폐쇄망으로 복사할 수 있습니다.
@@ -143,9 +154,26 @@ bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
 1. 패치된 Python module 전체 compile
 2. #54031 NoPE 512 sparse MLA vs PyTorch reference
 3. #47629 SM80 FP8 MQA vs PyTorch reference
-4. int64 block addressing / tail bound / MTP seq-lens fix / #47644 존재 여부
+4. int64 block addressing / MTP context-lens / KPoolTail persistent mapping / padded-slot sentinel 검증
+5. hybrid/MTP positions propagation 및 KPoolTail generic slot-map exclusion
+6. #47644 존재 여부
 
 GPU kernel test가 실패하면 full model serving으로 넘어가지 않는 것을 권장합니다.
+
+## 오프라인/소스 백업
+
+참조 PR이나 외부 저장소가 나중에 사라져도 재구성할 수 있도록 `source-backup` 브랜치에 pinned source snapshot과 patch 자료를 별도로 보관합니다.
+
+```bash
+git fetch origin source-backup
+git worktree add ../glm53-source-backup origin/source-backup
+
+# source-backup에서 vendor를 재조립한 후
+bash ../glm53-source-backup/backup/reassemble_vendor.sh
+BACKUP_VENDOR=../glm53-source-backup/backup/vendor bash ./prepare_vendor.sh
+```
+
+`source-backup`은 실행 브랜치가 아니라 재현용 보관 브랜치입니다. 실제 빌드 스크립트의 기준은 `main`입니다.
 
 # vLLM 실행 설정
 
@@ -215,9 +243,12 @@ bash ./serve_tp8_initial.sh
 | max num seqs | **8** |
 | max num batched tokens | **8192** |
 | KV cache | **BF16** |
-| MTP | **5 draft tokens** |
+| MTP | **3 draft tokens** (기본) |
 | Prefix caching | **ON** |
 | Sparse MLA | `TRITON_MLA_SPARSE` |
+| `sparse_mla_force_mqa` | **true** |
+| NCCL | `Ring` / `Simple` |
+| custom all-reduce | **OFF** |
 | CUDA Graph | 허용 |
 
 실행:
@@ -273,7 +304,7 @@ TP8×PP2, MTP OFF
 5. 8192보다 긴 prompt로 chunked prefill
 6. Claude Code tool call
 7. Claude Code WebFetch
-8. single-node MTP5
+8. single-node MTP3 (필요 시 `NUM_SPEC_TOKENS=5`를 별도 A/B)
 9. prefix caching
 10. 256K → 512K → 필요 시 1M
 11. TP8 × PP2
@@ -297,7 +328,8 @@ bash ./serve_test.sh
 - SM80 Triton sparse MLA: vLLM PR #47629
 - GLM-5.3 NoPE 512: vLLM PR #54031
 - PP pinned-buffer race: vLLM PR #47644
-- A800 reference project: https://gitee.com/kill-life/glm5.3-flash-deployment-a800
+- Ampere GLM-5.3 backport: https://github.com/wtdcode/vllm-backport
+- A800 historical comparison: https://gitee.com/kill-life/glm5.3-flash-deployment-a800
 
 ## 라이선스
 
