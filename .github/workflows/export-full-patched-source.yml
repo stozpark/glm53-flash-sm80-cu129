@@ -1,0 +1,130 @@
+name: Export full patched vLLM source
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-full-patched-source.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch pinned source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin source-backup:refs/remotes/origin/source-backup
+
+          rm -rf /tmp/glm53-base /tmp/glm53-work /tmp/glm53-vendor /tmp/glm53-export
+          mkdir -p /tmp/glm53-base /tmp/glm53-work /tmp/glm53-vendor /tmp/glm53-export
+
+          git archive origin/source-backup backup/base487/vllm | tar -x -C /tmp/glm53-base
+          git archive origin/source-backup backup/vendor | tar -x -C /tmp/glm53-base
+
+          cp -a /tmp/glm53-base/backup/base487/vllm /tmp/glm53-work/vllm
+          cp -a /tmp/glm53-base/backup/vendor/. /tmp/glm53-vendor/
+
+      - name: Apply the exact production patch chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          VLLM_ROOT=/tmp/glm53-work/vllm
+          VENDOR=/tmp/glm53-vendor
+
+          python3 patch_47644_compat.py --vllm-root "$VLLM_ROOT"
+          python3 patch_runtime.py \
+            --vllm-root "$VLLM_ROOT" \
+            --vendor "$VENDOR" \
+            --backup-root /tmp/glm53-stock
+          python3 patch_cuda_sparse_priority.py --vllm-root "$VLLM_ROOT"
+          python3 patch_deepgemm_gate.py --vllm-root "$VLLM_ROOT"
+          python3 patch_kpool_topk_len.py --vllm-root "$VLLM_ROOT"
+          python3 patch_mrzhiyao_merge.py --vllm-root "$VLLM_ROOT" --vendor "$VENDOR"
+          python3 patch_glm53_tail.py --vllm-root "$VLLM_ROOT" --vendor "$VENDOR"
+          python3 patch_mtp_stream_fence.py --vllm-root "$VLLM_ROOT"
+          python3 verify_static.py --vllm-root "$VLLM_ROOT"
+
+      - name: Export only files that differ from the pinned base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          base = Path('/tmp/glm53-base/backup/base487/vllm')
+          work = Path('/tmp/glm53-work/vllm')
+          out = Path('/tmp/glm53-export/vllm')
+
+          changed = []
+          for src in sorted(work.rglob('*.py')):
+              if '__pycache__' in src.parts:
+                  continue
+              rel = src.relative_to(work)
+              old = base / rel
+              if not old.exists() or src.read_bytes() != old.read_bytes():
+                  dst = out / rel
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(src, dst)
+                  changed.append(rel.as_posix())
+
+          expected = {
+              'model_executor/layers/sparse_attn_indexer_kpool.py',
+              'models/glm5next/nvidia/ops/kpool_compress.py',
+              'platforms/cuda.py',
+              'v1/attention/backends/registry.py',
+              'v1/attention/backends/mla/indexer.py',
+              'v1/attention/backends/mla/triton_mla_sparse.py',
+              'v1/attention/ops/fp8_sm80.py',
+              'v1/attention/ops/mqa_logits_triton.py',
+              'v1/attention/ops/triton_mla_sparse_kernel.py',
+              'v1/worker/gpu_model_runner.py',
+              'v1/worker/gpu/block_table.py',
+              'v1/worker/gpu/model_runner.py',
+              'v1/worker/gpu/model_states/mamba_hybrid.py',
+              'v1/worker/gpu/spec_decode/speculator.py',
+              'v1/worker/gpu/spec_decode/autoregressive/speculator.py',
+          }
+          actual = set(changed)
+          if actual != expected:
+              missing = sorted(expected - actual)
+              extra = sorted(actual - expected)
+              raise SystemExit(f'patched-file set mismatch: missing={missing}, extra={extra}')
+
+          print('FULL_PATCHED_FILES=15')
+          for rel in changed:
+              print(rel)
+          PY
+
+      - name: Publish orphan branch containing only final vLLM files
+        shell: bash
+        env:
+          TARGET_BRANCH: full-patched-source
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git checkout --orphan "$TARGET_BRANCH"
+          git rm -rf . >/dev/null 2>&1 || true
+          git clean -fdx >/dev/null 2>&1 || true
+          cp -a /tmp/glm53-export/. .
+
+          test "$(find vllm -type f -name '*.py' | wc -l)" -eq 15
+          test "$(find . -type f ! -path './.git/*' | wc -l)" -eq 15
+
+          git add vllm
+          git commit -m "Export fully patched vLLM files from ${SOURCE_SHA}"
+          git push --force origin "HEAD:${TARGET_BRANCH}"
