@@ -12,6 +12,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
     vendor /opt/glm53-sm80/vendor
     patch_47644_compat.py /opt/glm53-sm80/patch_47644_compat.py
     patch_runtime.py /opt/glm53-sm80/patch_runtime.py
+    patch_deepgemm_gate.py /opt/glm53-sm80/patch_deepgemm_gate.py
     patch_mrzhiyao_merge.py /opt/glm53-sm80/patch_mrzhiyao_merge.py
     patch_glm53_tail.py /opt/glm53-sm80/patch_glm53_tail.py
     verify_static.py /opt/glm53-sm80/verify_static.py
@@ -37,6 +38,12 @@ From: vllm/vllm-openai:glm53-flash-cu129
       --vllm-root "${VLLM_ROOT}" \
       --vendor /opt/glm53-sm80/vendor \
       --backup-root /opt/glm53-sm80/stock
+
+    # The day-0/backport KPool class still contains a constructor-time DeepGEMM
+    # hard gate. Remove only that stale gate; runtime dispatch remains guarded
+    # and uses the Triton FP8 MQA fallback on SM80.
+    "${PYTHON_BIN}" /opt/glm53-sm80/patch_deepgemm_gate.py \
+      --vllm-root "${VLLM_ROOT}"
 
     # Keep #54031 FlashMLA plumbing but replace its sparse kernel with the
     # A800-production-validated Mrzhiyao derivative and its 64-multiple policy.
