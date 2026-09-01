@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           git fetch origin source-backup:refs/remotes/origin/source-backup
 
-          rm -rf /tmp/glm53-base /tmp/glm53-work /tmp/glm53-vendor /tmp/glm53-export
+          rm -rf /tmp/glm53-base /tmp/glm53-work /tmp/glm53-vendor /tmp/glm53-export /tmp/glm53-stock
           mkdir -p /tmp/glm53-base /tmp/glm53-work /tmp/glm53-vendor /tmp/glm53-export
 
           git archive origin/source-backup backup/base487/vllm | tar -x -C /tmp/glm53-base
@@ -33,6 +33,13 @@ jobs:
 
           cp -a /tmp/glm53-base/backup/base487/vllm /tmp/glm53-work/vllm
           cp -a /tmp/glm53-base/backup/vendor/. /tmp/glm53-vendor/
+
+          # source-backup intentionally stores only the pinned vLLM files that
+          # participate in this patch chain, not a complete installable package.
+          # patch_runtime.py uses __init__.py only as a root-sanity marker.
+          : > /tmp/glm53-work/vllm/__init__.py
+          mkdir -p /tmp/glm53-vendor/a800
+          cp /tmp/glm53-vendor/backport/kpool_compress.py /tmp/glm53-vendor/a800/kpool_compress.py
 
       - name: Apply the exact production patch chain
         shell: bash
@@ -68,7 +75,7 @@ jobs:
 
           changed = []
           for src in sorted(work.rglob('*.py')):
-              if '__pycache__' in src.parts:
+              if '__pycache__' in src.parts or src.name == '__init__.py':
                   continue
               rel = src.relative_to(work)
               old = base / rel
