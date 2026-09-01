@@ -7,10 +7,12 @@ on:
       - '.github/workflows/audit-patch-chain.yml'
       - 'patch_47644_compat.py'
       - 'patch_runtime.py'
+      - 'patch_mrzhiyao_merge.py'
       - 'patch_glm53_tail.py'
       - 'verify_static.py'
       - 'tests/test_patch_runtime_unit.py'
       - 'tests/test_patch_glm53_tail_unit.py'
+      - 'Singularity.def'
 
 permissions:
   contents: read
@@ -37,6 +39,7 @@ jobs:
           set -euxo pipefail
           python tests/test_patch_runtime_unit.py
           python tests/test_patch_glm53_tail_unit.py
+          python -m py_compile patch_mrzhiyao_merge.py
 
       - name: Reconstruct exact glm53-flash-cu129 source subset
         run: |
@@ -44,8 +47,6 @@ jobs:
           rm -rf /tmp/vllm487 /tmp/vendor /tmp/stock487
           mkdir -p /tmp/vllm487 /tmp/vendor
           cp -a source-backup/backup/base487/vllm/. /tmp/vllm487/
-          # The backup is intentionally a touched-file subset. Recreate package
-          # marker and parent directories for files added by the patch chain.
           : > /tmp/vllm487/__init__.py
           mkdir -p \
             /tmp/vllm487/v1/attention/ops \
@@ -66,6 +67,9 @@ jobs:
             --vllm-root /tmp/vllm487 \
             --vendor /tmp/vendor \
             --backup-root /tmp/stock487
+          python main/patch_mrzhiyao_merge.py \
+            --vllm-root /tmp/vllm487 \
+            --vendor /tmp/vendor
           python main/patch_glm53_tail.py \
             --vllm-root /tmp/vllm487 \
             --vendor /tmp/vendor
