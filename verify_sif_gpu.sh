@@ -32,6 +32,36 @@ PY
 
 VLLM_ROOT="$("${R}" exec --nv "${EXEC_ENV[@]}" "${SIF}" "${PYTHON_BIN}" -c 'import pathlib,vllm; print(pathlib.Path(vllm.__file__).resolve().parent)')"
 "${R}" exec --nv "${EXEC_ENV[@]}" "${SIF}" "${PYTHON_BIN}" /opt/glm53-sm80/verify_static.py --vllm-root "${VLLM_ROOT}"
+
+# Exercise the exact selector path needed by GLM-5.3 on A100 without loading
+# model weights. This catches stale/unpatched SIFs before a multi-minute TP8
+# model load.
+"${R}" exec --nv "${EXEC_ENV[@]}" "${SIF}" "${PYTHON_BIN}" - <<'PY'
+import torch
+from vllm.platforms import current_platform
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
+from vllm.v1.attention.selector import AttentionSelectorConfig
+
+cfg = AttentionSelectorConfig(
+    head_size=512,
+    dtype=torch.bfloat16,
+    kv_cache_dtype="bfloat16",
+    block_size=None,
+    use_mla=True,
+    use_sparse=True,
+)
+backend = AttentionBackendEnum.TRITON_MLA_SPARSE
+path = current_platform.get_attn_backend_cls(
+    backend,
+    attn_selector_config=cfg,
+    num_heads=None,
+)
+print("EXPLICIT_SELECTOR_BACKEND=", backend.name)
+print("EXPLICIT_SELECTOR_CLASS=", path)
+assert path and "triton_mla_sparse" in path.lower(), path
+print("EXPLICIT_TRITON_MLA_SPARSE_SELECTOR=PASS")
+PY
+
 "${R}" exec --nv "${EXEC_ENV[@]}" --bind "${ROOT}/tests:/glm53-tests:ro" "${SIF}" "${PYTHON_BIN}" /glm53-tests/test_nope512_kernel.py
 "${R}" exec --nv "${EXEC_ENV[@]}" --bind "${ROOT}/tests:/glm53-tests:ro" "${SIF}" "${PYTHON_BIN}" /glm53-tests/test_mqa_sm80.py
 
