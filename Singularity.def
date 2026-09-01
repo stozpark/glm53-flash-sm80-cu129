@@ -17,6 +17,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
     patch_kpool_topk_len.py /opt/glm53-sm80/patch_kpool_topk_len.py
     patch_mrzhiyao_merge.py /opt/glm53-sm80/patch_mrzhiyao_merge.py
     patch_glm53_tail.py /opt/glm53-sm80/patch_glm53_tail.py
+    patch_mtp_stream_fence.py /opt/glm53-sm80/patch_mtp_stream_fence.py
     verify_static.py /opt/glm53-sm80/verify_static.py
 
 %post
@@ -44,6 +45,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
       --vllm-root "${VLLM_ROOT}" --vendor /opt/glm53-sm80/vendor
     "${PYTHON_BIN}" /opt/glm53-sm80/patch_glm53_tail.py \
       --vllm-root "${VLLM_ROOT}" --vendor /opt/glm53-sm80/vendor
+    "${PYTHON_BIN}" /opt/glm53-sm80/patch_mtp_stream_fence.py --vllm-root "${VLLM_ROOT}"
     "${PYTHON_BIN}" /opt/glm53-sm80/verify_static.py --vllm-root "${VLLM_ROOT}"
 
     cp /opt/glm53-sm80/vendor/MANIFEST.txt /opt/glm53-sm80/BUILD_MANIFEST.txt
