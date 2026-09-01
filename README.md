@@ -10,11 +10,55 @@
 vllm/vllm-openai:glm53-flash-cu129
 ```
 
-> 공식 vLLM의 GLM-5.3 SM80 지원이 아니라, 아직 merge되지 않은 upstream PR과 Ampere에서 발견된 correctness fix를 `glm53-flash-cu129`에 선별 backport하는 실험적 빌드입니다.
+> 공식 vLLM의 GLM-5.3 SM80 지원이 아니라, 아직 merge되지 않은 upstream PR과 Ampere에서 발견된 correctness fix를 `glm53-flash-cu129`에 선별 backport한 빌드입니다.
 
-## 현재 패치 구성
+---
 
-### 1. PR #54031 — GLM-5.3 NoPE 512 Sparse MLA
+# 현재 검증 상태
+
+## ✅ A100 80GB ×8 실기기 검증 완료
+
+**2026-09-01 기준**, NVIDIA **A100-SXM4-80GB ×8** 단일 노드에서 `serve_tp8_ideal.sh` 프로파일로 GLM-5.3-Flash serving이 정상 동작하는 것을 확인했습니다.
+
+검증에 사용한 운영 프로파일:
+
+| 항목 | 값 |
+|---|---:|
+| GPU | **A100-SXM4-80GB ×8** |
+| TP | **8** |
+| Expert Parallel | **ON** |
+| GPU memory utilization | **0.90** |
+| max model len | **524288 (512K configured)** |
+| max num seqs | **8** |
+| max num batched tokens | **8192** |
+| KV cache | **BF16** |
+| MTP | **3 draft tokens** |
+| Prefix caching | **ON** |
+| Sparse MLA | **TRITON_MLA_SPARSE** |
+| `sparse_mla_force_mqa` | **true** |
+| MoE backend | **Marlin** |
+| NCCL | **Ring / Simple** |
+| custom all-reduce | **OFF** |
+
+즉, 현재 권장 단일 노드 실행 경로는 다음입니다.
+
+```text
+A100 80GB ×8
+TP=8
+EP=ON
+PP=1
+serve_tp8_ideal.sh
+```
+
+> `max_model_len=524288`로 서버가 정상 기동하고 일반 serving이 동작하는 것은 확인했습니다. 다만 이것이 512K 길이의 실제 full-context 요청을 끝까지 스트레스 테스트했다는 의미는 아닙니다. 256K/512K/1M 장문 입력은 필요 시 별도 검증하십시오.
+
+> TP8×PP2 멀티노드는 아직 실기기 검증 완료 상태로 보지 않습니다.
+
+---
+
+# 현재 패치 구성
+
+## 1. PR #54031 — GLM-5.3 NoPE 512 Sparse MLA
 
 GLM-5.3의 `dim_qk=512`, `qk_rope_head_dim=0`을 native `TRITON_MLA_SPARSE` kernel에서 직접 처리합니다.
 
@@ -23,10 +67,11 @@ GLM-5.3의 `dim_qk=512`, `qk_rope_head_dim=0`을 native `TRITON_MLA_SPARSE` kern
 - `BLOCK_DPE=0`에서 RoPE 계산 compile-time 제거
 - split-KV decode
 - empty-row NaN guard
+- long-context KV row-offset int64 처리
 
 #54031은 newer-main API이므로 `patch_runtime.py`에서 `glm53-flash-cu129` API에 맞게 적응합니다.
 
-### 2. PR #47629 — SM80 MQA indexer fallback
+## 2. PR #47629 — SM80 MQA indexer fallback
 
 고정 commit:
 
@@ -42,10 +87,11 @@ GLM-5.3의 `dim_qk=512`, `qk_rope_head_dim=0`을 native `TRITON_MLA_SPARSE` kern
 - chunked-prefill dirty logits 방지
 - GLM-5.3 KPool indexer에도 동일 fallback 적용
 - MTP `(B,next_n)` `seq_lens`를 Triton paged MQA용 `[B]`로 변환
+- KPool `persistent_topk()`에 실제 compressed-logit width 전달
 
-### 3. GLM-5.3 KPool / KPoolTail Ampere correctness fix
+## 3. GLM-5.3 KPool / KPoolTail Ampere correctness fix
 
-실제 빌드 경로는 더 이상 Gitee A800 프로젝트의 KPool writer에 의존하지 않습니다. 다음 Ampere backport를 고정하여 사용합니다.
+다음 Ampere backport를 고정하여 사용합니다.
 
 ```text
 wtdcode/vllm-backport
@@ -62,19 +108,30 @@ wtdcode/vllm-backport
 - MTP padded `seq_lens[:num_decodes]` 처리
 - KPoolTail group을 generic slot-mapping kernel에서 제외
 - MTP draft metadata에도 positions 전달
+- MTP draft-buffer stream synchronization fence
 
-### 4. PR #47644 — PP pinned-buffer race
+## 4. Sparse MLA backend selector fix
 
-`glm53-flash-cu129@487ecf187`은 upstream PR 당시 코드와 달리 이미 `torch.cuda.Event(blocking=True)`를 사용합니다.
+Ampere에서 `TRITON_MLA_SPARSE`가 sparse backend 후보에 등록되어도 기존 GLM 우선순위 로직의 `pop()`에 의해 제거될 수 있는 문제를 수정합니다.
 
-따라서 `patch_47644_compat.py`에서 **blocking semantics는 유지하고** event 생성 조건만 다음으로 확대합니다.
+현재 patch는 `TRITON_MLA_SPARSE`를 SM90 전용 후보 앞에 배치하고, CI에서 실제 `pop()` 이후에도 후보가 남는 것을 control-flow 수준으로 검증합니다.
 
-```python
-if self.vllm_config.max_concurrent_batches > 1:
-    self.prepare_inputs_event = torch.cuda.Event(blocking=True)
+## 5. DeepGEMM fallback gate fix
+
+A100에서는 DeepGEMM이 없는 것이 정상입니다.
+
+GLM-5.3 KPool constructor의 DeepGEMM hard gate를 제거하고 다음 경로로 진행하도록 합니다.
+
+```text
+DeepGEMM unavailable
+→ SM80 Triton sparse-indexer fallback
 ```
 
-TP-only에는 사실상 영향이 없고, TP8×PP2 같은 PP 구성을 위한 fix입니다.
+## 6. PR #47644 — PP pinned-buffer race
+
+`glm53-flash-cu129@487ecf187`의 기존 `blocking=True` semantics를 유지하면서 concurrent batch에서 필요한 event 생성 조건을 보강합니다.
+
+이 patch는 포함되어 있지만 **TP8×PP2 자체는 아직 이 저장소에서 실기기 검증 완료 상태가 아닙니다.**
 
 ---
 
@@ -86,39 +143,43 @@ TP-only에는 사실상 영향이 없고, TP8×PP2 같은 PP 구성을 위한 fi
 .github/workflows/audit-patch-chain.yml
 ```
 
-이 workflow는 외부 upstream을 다시 받지 않고 `source-backup`의 고정 snapshot만 사용해:
+이 workflow는 `source-backup`의 pinned snapshot으로 exact base를 재구성한 뒤 전체 patch chain을 다시 적용합니다.
 
-1. patch unit tests 실행
+검증 대상에는 다음이 포함됩니다.
+
+1. patch unit tests
 2. `vLLM@487ecf187` source subset 재구성
-3. `patch_47644_compat.py` 적용
-4. `patch_runtime.py` 전체 적용
-5. `patch_glm53_tail.py` 전체 적용
-6. patched Python 전체 compile/static verification
-7. backup SHA256 검증
-
-을 수행합니다.
+3. PP compatibility patch
+4. DeepGEMM gate 제거
+5. runtime / Sparse MLA patch
+6. Sparse backend selector control-flow 검증
+7. Mrzhiyao A800 sparse kernel merge
+8. GLM KPool/KPoolTail correctness fix
+9. long-context int64 offset fix
+10. MTP stream fence
+11. patched Python compile/static verification
+12. backup SHA256 verification
 
 현재 전체 source audit는 **PASS**입니다.
 
 상세 기록은 [`AUDIT.md`](AUDIT.md)를 참고하십시오.
 
-> 단, 이 PASS는 source/patch compatibility 검증입니다. 실제 A100 GPU에서 Triton kernel과 full GLM-5.3 serving correctness를 검증했다는 뜻은 아닙니다. 최종 확인은 아래 `verify_sif_gpu.sh`와 실제 tool/WebFetch workload로 해야 합니다.
-
 ---
 
 # 오프라인 소스 백업
 
-`source-backup` 브랜치에 실제 참조 소스를 저장해 두었습니다.
+`source-backup` 브랜치에 참조 소스를 저장해 두었습니다.
 
 ```text
 backup/vendor/             실제 빌드에 필요한 pinned vendor source
 backup/base487/            glm53-flash-cu129 기준 vLLM source
 backup/backport-reference/ Ampere GLM-5.3 reference source
-backup/a800-reference/     Gitee A800 프로젝트 전체 snapshot (비교용)
+backup/mrzhiyao-reference/ A800 native-FP8 reference source
+backup/a800-reference/     Gitee A800 프로젝트 snapshot (비교용)
 backup/SHA256SUMS.txt      snapshot checksum
 ```
 
-참조 저장소가 사라져도 다음처럼 완전 오프라인으로 vendor를 준비할 수 있습니다.
+오프라인 vendor 준비:
 
 ```bash
 git fetch origin source-backup
@@ -127,8 +188,6 @@ git worktree add ../glm53-source-backup origin/source-backup
 BACKUP_VENDOR=../glm53-source-backup/backup/vendor \
   bash ./prepare_vendor.sh
 ```
-
-`prepare_vendor.sh`는 `BACKUP_VENDOR`에 파일이 있으면 네트워크를 사용하지 않습니다.
 
 `source-backup`은 보관/재현용이며 실제 개발·빌드 기준은 `main`입니다.
 
@@ -173,17 +232,27 @@ BUILD_FLAGS='--fakeroot' \
   bash ./build_sif.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
+빌드 중 다음이 통과해야 합니다.
+
+```text
+STATIC_VERIFY=PASS
+```
+
 ## 3. A100 GPU kernel 검증
 
 ```bash
-bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
+GPU=0 bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
 ```
 
-이 단계가 실패하면 full serving으로 넘어가지 않는 것을 권장합니다.
+정상 완료:
+
+```text
+SIF_GPU_VERIFY=PASS
+```
 
 ---
 
-# vLLM 실행 설정
+# vLLM 실행
 
 두 프로파일을 제공합니다.
 
@@ -192,9 +261,9 @@ PROFILE=initial → serve_tp8_initial.sh
 PROFILE=ideal   → serve_tp8_ideal.sh
 ```
 
-## A. 초기 검증 설정
+## A. 초기 진단 프로파일
 
-정확성 우선입니다.
+문제 분리를 위한 보수적 설정입니다.
 
 | 항목 | 값 |
 |---|---:|
@@ -217,35 +286,9 @@ SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
 PROFILE=initial bash ./serve_tp8.sh
 ```
 
-검증 목표:
+## B. 권장 운영 프로파일 — A100 ×8 검증 완료
 
-- 짧은 deterministic output
-- 32K / 64K / 128K needle retrieval
-- 8192 tokens 초과 chunked prefill
-- 긴 tool result
-- Claude Code tool calling
-- Claude Code WebFetch
-
-## B. 이상적 운영 설정
-
-초기 설정이 모두 통과한 뒤 사용하는 목표 프로파일입니다.
-
-| 항목 | 값 |
-|---|---:|
-| GPU | A100/A800 80GB ×8 |
-| TP | 8 |
-| Expert Parallel | ON |
-| GPU memory utilization | **0.90** |
-| max model len | **524288 (512K)** |
-| max num seqs | **8** |
-| max num batched tokens | **8192** |
-| KV cache | **BF16** |
-| MTP | **3 draft tokens** 기본 |
-| Prefix caching | **ON** |
-| Sparse MLA | `TRITON_MLA_SPARSE` |
-| `sparse_mla_force_mqa` | **true** |
-| NCCL | Ring / Simple |
-| custom all-reduce | OFF |
+현재 A100 80GB ×8 단일 노드에서 정상 serving을 확인한 프로파일입니다.
 
 ```bash
 MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
@@ -253,64 +296,62 @@ SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
 PROFILE=ideal bash ./serve_tp8.sh
 ```
 
-MTP5를 시험하려면 초기 안정화 후:
+또는 직접:
+
+```bash
+MODEL_HOST_PATH=/path/to/GLM-5.3-Flash \
+SIF_PATH=/path/to/glm53-flash-sm80-cu129.sif \
+./serve_tp8_ideal.sh
+```
+
+기본값:
+
+```text
+TP=8
+Expert Parallel=ON
+gpu_memory_utilization=0.90
+max_model_len=524288
+max_num_seqs=8
+max_num_batched_tokens=8192
+KV cache=BF16
+MTP=3
+prefix caching=ON
+TRITON_MLA_SPARSE
+sparse_mla_force_mqa=true
+MoE backend=marlin
+NCCL_ALGO=Ring
+NCCL_PROTO=Simple
+custom all-reduce=OFF
+```
+
+MTP5는 별도 A/B 검증 후 사용하십시오.
 
 ```bash
 NUM_SPEC_TOKENS=5 PROFILE=ideal bash ./serve_tp8.sh
 ```
 
-처럼 별도 A/B 검증하십시오.
-
-512K가 안정된 뒤 1M으로 올리는 것을 권장합니다.
-
 ---
 
-# 2노드 확장
+# 추가 검증이 필요한 범위
 
-일반적으로 다음 topology를 권장합니다.
+현재 A100×8 ideal serving은 확인되었지만 다음은 별도 stress test 대상으로 남겨 둡니다.
 
-```text
-Node 0: TP8
-Node 1: TP8
-전체: TP=8, PP=2
-```
-
-노드 간 TP16보다 inter-node tensor-parallel collective 부담이 작습니다.
-
-PP 최초 검증은:
-
-```text
-TP8×PP2 + MTP OFF
-→ long prefill / tool call
-→ 안정화 후 MTP ON
-```
-
-순서를 권장합니다.
-
----
-
-# 최종 correctness 검증 순서
-
-1. `verify_sif_gpu.sh`
-2. 짧은 deterministic prompt
-3. 32K / 64K / 128K needle
-4. chunked prefill
-5. Claude Code tool call
-6. Claude Code WebFetch
-7. MTP3
-8. prefix caching
-9. 256K → 512K → 필요 시 1M
-10. TP8×PP2
+- 실제 256K / 512K full-context 요청
+- 1M context
+- MTP5 이상
+- TP8×PP2 멀티노드
+- 장시간/고동시성 soak test
 
 ---
 
 ## 출처
 
 - vLLM: https://github.com/vllm-project/vllm
-- SM80 Triton Sparse MLA: vLLM PR #47629
-- GLM-5.3 NoPE 512: vLLM PR #54031
+- SM80 Triton MQA fallback: vLLM PR #47629
+- GLM-5.3 NoPE 512 Sparse MLA: vLLM PR #54031
 - PP pinned-buffer race: vLLM PR #47644
 - Ampere GLM-5.3 backport: https://github.com/wtdcode/vllm-backport
+- A800 native-FP8 reference: https://github.com/Mrzhiyao/glm53-a800-vllm
 - A800 historical comparison: https://gitee.com/kill-life/glm5.3-flash-deployment-a800
 
 ## 라이선스
