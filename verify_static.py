@@ -11,6 +11,11 @@ def must(text: str, needle: str, label: str) -> None:
         raise RuntimeError(f"verification failed: {label}: missing {needle!r}")
 
 
+def must_not(text: str, needle: str, label: str) -> None:
+    if needle in text:
+        raise RuntimeError(f"verification failed: {label}: forbidden {needle!r}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vllm-root", required=True)
@@ -71,6 +76,8 @@ def main() -> None:
     must(t, "fp8_paged_mqa_logits_triton", "KPool decode SM80 fallback")
     must(t, "seq_lens[:, -1].contiguous()", "MTP 2D seq_lens fix")
     must(t, "is_deep_gemm_supported", "KPool architecture gate")
+    must(t, "DeepGEMM unavailable; using SM80 Triton sparse-indexer fallback.", "KPool DeepGEMM fallback marker")
+    must_not(t, "Sparse Attention Indexer CUDA op requires DeepGEMM to be installed.", "stale KPool DeepGEMM hard gate")
 
     t = files["runner"].read_text()
     must(t, "if self.vllm_config.max_concurrent_batches > 1:", "#47644 PP race fix")
