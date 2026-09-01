@@ -34,10 +34,18 @@ jobs:
           cp -a /tmp/glm53-base/backup/base487/vllm /tmp/glm53-work/vllm
           cp -a /tmp/glm53-base/backup/vendor/. /tmp/glm53-vendor/
 
-          # source-backup intentionally stores only the pinned vLLM files that
-          # participate in this patch chain, not a complete installable package.
-          # patch_runtime.py uses __init__.py only as a root-sanity marker.
+          # source-backup intentionally stores only the files involved in this
+          # patch chain. Recreate the package marker and directories used by
+          # files that are newly added by the SM80 port.
           : > /tmp/glm53-work/vllm/__init__.py
+          mkdir -p \
+            /tmp/glm53-work/vllm/v1/attention/ops \
+            /tmp/glm53-work/vllm/v1/attention/backends/mla \
+            /tmp/glm53-work/vllm/model_executor/layers \
+            /tmp/glm53-work/vllm/models/glm5next/nvidia/ops \
+            /tmp/glm53-work/vllm/v1/worker/gpu/model_states \
+            /tmp/glm53-work/vllm/v1/worker/gpu/spec_decode/autoregressive
+
           mkdir -p /tmp/glm53-vendor/a800
           cp /tmp/glm53-vendor/backport/kpool_compress.py /tmp/glm53-vendor/a800/kpool_compress.py
 
