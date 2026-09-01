@@ -12,6 +12,7 @@ on:
       - 'patch_kpool_topk_len.py'
       - 'patch_mrzhiyao_merge.py'
       - 'patch_glm53_tail.py'
+      - 'patch_mtp_stream_fence.py'
       - 'verify_static.py'
       - 'tests/test_patch_runtime_unit.py'
       - 'tests/test_patch_glm53_tail_unit.py'
@@ -42,7 +43,12 @@ jobs:
           set -euxo pipefail
           python tests/test_patch_runtime_unit.py
           python tests/test_patch_glm53_tail_unit.py
-          python -m py_compile patch_cuda_sparse_priority.py patch_deepgemm_gate.py patch_kpool_topk_len.py patch_mrzhiyao_merge.py
+          python -m py_compile \
+            patch_cuda_sparse_priority.py \
+            patch_deepgemm_gate.py \
+            patch_kpool_topk_len.py \
+            patch_mrzhiyao_merge.py \
+            patch_mtp_stream_fence.py
 
       - name: Reconstruct exact glm53-flash-cu129 source subset
         run: |
@@ -58,6 +64,7 @@ jobs:
             /tmp/vllm487/models/glm5next/nvidia/ops \
             /tmp/vllm487/v1/worker/gpu/model_states \
             /tmp/vllm487/v1/worker/gpu/spec_decode
+          test -s /tmp/vllm487/v1/worker/gpu/spec_decode/autoregressive/speculator.py
           cp -a source-backup/backup/vendor/. /tmp/vendor/
           mkdir -p /tmp/vendor/a800
           cp /tmp/vendor/backport/kpool_compress.py /tmp/vendor/a800/kpool_compress.py
@@ -80,22 +87,28 @@ jobs:
           python main/patch_glm53_tail.py \
             --vllm-root /tmp/vllm487 \
             --vendor /tmp/vendor
+          python main/patch_mtp_stream_fence.py --vllm-root /tmp/vllm487
           python main/verify_static.py --vllm-root /tmp/vllm487
 
-      - name: Verify selector control-flow result
+      - name: Verify selector and MTP control-flow result
         run: |
           set -euxo pipefail
           python - <<'PY'
           import re
           from pathlib import Path
-          t = Path('/tmp/vllm487/platforms/cuda.py').read_text()
-          m = re.search(r'sparse_tail = \[\n(?P<body>(?:\s+AttentionBackendEnum\.[A-Z0-9_]+,\n)+)\s+\]', t)
+
+          cuda = Path('/tmp/vllm487/platforms/cuda.py').read_text()
+          m = re.search(r'sparse_tail = \[\n(?P<body>(?:\s+AttentionBackendEnum\.[A-Z0-9_]+,\n)+)\s+\]', cuda)
           assert m is not None
           names = [x.strip().rstrip(',') for x in m.group('body').splitlines()]
           assert names[-1] == 'AttentionBackendEnum.FLASHINFER_MLA_SPARSE_SM90'
           names.pop()
           assert 'AttentionBackendEnum.TRITON_MLA_SPARSE' in names
-          print('GLM_SPARSE_SELECTOR_CONTROL_FLOW=PASS')
+
+          mtp = Path('/tmp/vllm487/v1/worker/gpu/spec_decode/autoregressive/speculator.py').read_text()
+          assert mtp.count('torch.accelerator.current_stream().synchronize()') == 2
+          assert mtp.count('if not torch.cuda.is_current_stream_capturing():') >= 2
+          print('GLM_RUNTIME_CONTROL_FLOW=PASS')
           PY
 
       - name: Verify source-backup checksums
