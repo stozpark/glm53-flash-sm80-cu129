@@ -60,12 +60,14 @@ jobs:
             vllm/v1/attention/backends/registry.py \
             vllm/v1/attention/backends/mla/indexer.py \
             vllm/model_executor/layers/sparse_attn_indexer_kpool.py \
+            vllm/models/glm5next/nvidia/attention.py \
             vllm/models/glm5next/nvidia/ops/kpool_compress.py \
             vllm/v1/worker/gpu_model_runner.py \
             vllm/v1/worker/gpu/model_runner.py \
             vllm/v1/worker/gpu/block_table.py \
             vllm/v1/worker/gpu/model_states/mamba_hybrid.py \
             vllm/v1/worker/gpu/spec_decode/speculator.py \
+            vllm/v1/worker/gpu/spec_decode/autoregressive/speculator.py \
             vllm/v1/kv_cache_interface.py; do
             get "https://raw.githubusercontent.com/vllm-project/vllm/${BASE}/${p}" "backup/base487/${p}"
           done
@@ -74,11 +76,13 @@ jobs:
             vllm/v1/attention/backends/mla/indexer.py \
             vllm/model_executor/layers/sparse_attn_indexer_kpool.py \
             vllm/v1/attention/ops/fp8_sm80.py \
+            vllm/models/glm5next/nvidia/attention.py \
             vllm/models/glm5next/nvidia/ops/kpool_compress.py \
             vllm/v1/worker/gpu/model_runner.py \
             vllm/v1/worker/gpu/block_table.py \
             vllm/v1/worker/gpu/model_states/mamba_hybrid.py \
-            vllm/v1/worker/gpu/spec_decode/speculator.py; do
+            vllm/v1/worker/gpu/spec_decode/speculator.py \
+            vllm/v1/worker/gpu/spec_decode/autoregressive/speculator.py; do
             get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/${p}" "backup/backport-reference/${p}"
           done
 
