@@ -7,6 +7,7 @@ on:
       - '.github/workflows/audit-patch-chain.yml'
       - 'patch_47644_compat.py'
       - 'patch_runtime.py'
+      - 'patch_cuda_sparse_priority.py'
       - 'patch_deepgemm_gate.py'
       - 'patch_kpool_topk_len.py'
       - 'patch_mrzhiyao_merge.py'
@@ -41,7 +42,7 @@ jobs:
           set -euxo pipefail
           python tests/test_patch_runtime_unit.py
           python tests/test_patch_glm53_tail_unit.py
-          python -m py_compile patch_deepgemm_gate.py patch_kpool_topk_len.py patch_mrzhiyao_merge.py
+          python -m py_compile patch_cuda_sparse_priority.py patch_deepgemm_gate.py patch_kpool_topk_len.py patch_mrzhiyao_merge.py
 
       - name: Reconstruct exact glm53-flash-cu129 source subset
         run: |
@@ -70,6 +71,7 @@ jobs:
             --vllm-root /tmp/vllm487 \
             --vendor /tmp/vendor \
             --backup-root /tmp/stock487
+          python main/patch_cuda_sparse_priority.py --vllm-root /tmp/vllm487
           python main/patch_deepgemm_gate.py --vllm-root /tmp/vllm487
           python main/patch_kpool_topk_len.py --vllm-root /tmp/vllm487
           python main/patch_mrzhiyao_merge.py \
@@ -79,6 +81,22 @@ jobs:
             --vllm-root /tmp/vllm487 \
             --vendor /tmp/vendor
           python main/verify_static.py --vllm-root /tmp/vllm487
+
+      - name: Verify selector control-flow result
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          t = Path('/tmp/vllm487/platforms/cuda.py').read_text()
+          m = re.search(r'sparse_tail = \[\n(?P<body>(?:\s+AttentionBackendEnum\.[A-Z0-9_]+,\n)+)\s+\]', t)
+          assert m is not None
+          names = [x.strip().rstrip(',') for x in m.group('body').splitlines()]
+          assert names[-1] == 'AttentionBackendEnum.FLASHINFER_MLA_SPARSE_SM90'
+          names.pop()
+          assert 'AttentionBackendEnum.TRITON_MLA_SPARSE' in names
+          print('GLM_SPARSE_SELECTOR_CONTROL_FLOW=PASS')
+          PY
 
       - name: Verify source-backup checksums
         working-directory: source-backup
