@@ -12,6 +12,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
     vendor /opt/glm53-sm80/vendor
     patch_47644_compat.py /opt/glm53-sm80/patch_47644_compat.py
     patch_runtime.py /opt/glm53-sm80/patch_runtime.py
+    patch_cuda_sparse_priority.py /opt/glm53-sm80/patch_cuda_sparse_priority.py
     patch_deepgemm_gate.py /opt/glm53-sm80/patch_deepgemm_gate.py
     patch_kpool_topk_len.py /opt/glm53-sm80/patch_kpool_topk_len.py
     patch_mrzhiyao_merge.py /opt/glm53-sm80/patch_mrzhiyao_merge.py
@@ -36,6 +37,7 @@ From: vllm/vllm-openai:glm53-flash-cu129
     "${PYTHON_BIN}" /opt/glm53-sm80/patch_runtime.py \
       --vllm-root "${VLLM_ROOT}" --vendor /opt/glm53-sm80/vendor \
       --backup-root /opt/glm53-sm80/stock
+    "${PYTHON_BIN}" /opt/glm53-sm80/patch_cuda_sparse_priority.py --vllm-root "${VLLM_ROOT}"
     "${PYTHON_BIN}" /opt/glm53-sm80/patch_deepgemm_gate.py --vllm-root "${VLLM_ROOT}"
     "${PYTHON_BIN}" /opt/glm53-sm80/patch_kpool_topk_len.py --vllm-root "${VLLM_ROOT}"
     "${PYTHON_BIN}" /opt/glm53-sm80/patch_mrzhiyao_merge.py \
