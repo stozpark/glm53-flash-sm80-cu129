@@ -64,6 +64,7 @@ jobs:
             /tmp/vllm487/models/glm5next/nvidia/ops \
             /tmp/vllm487/v1/worker/gpu/model_states \
             /tmp/vllm487/v1/worker/gpu/spec_decode
+          # Every file patched below must come from the pinned-base snapshot.
           test -s /tmp/vllm487/v1/worker/gpu/spec_decode/autoregressive/speculator.py
           cp -a source-backup/backup/vendor/. /tmp/vendor/
           mkdir -p /tmp/vendor/a800
