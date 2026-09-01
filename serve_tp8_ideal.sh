@@ -38,7 +38,6 @@ nohup "${R}" exec --nv \
   --env TRITON_CACHE_DIR=/glm53_cache/triton \
   --env VLLM_CACHE_ROOT=/glm53_cache/vllm \
   --env VLLM_TEST_FORCE_FP8_MARLIN=1 \
-  --env VLLM_ATTENTION_BACKEND=TRITON_MLA_SPARSE \
   --env VLLM_ENGINE_READY_TIMEOUT_S=3600 \
   --env PYTHONUNBUFFERED=1 \
   --env VLLM_LOGGING_LEVEL=INFO \
@@ -65,7 +64,7 @@ nohup "${R}" exec --nv \
     --max-num-seqs "${MAX_SEQS}" \
     --max-num-batched-tokens "${MAX_BATCHED_TOKENS}" \
     --kv-cache-dtype bfloat16 \
-    --attention-config '{"sparse_mla_force_mqa": true}' \
+    --attention-config '{"backend":"TRITON_MLA_SPARSE","sparse_mla_force_mqa":true}' \
     --enable-prefix-caching \
     --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${NUM_SPEC_TOKENS}}" \
     --disable-custom-all-reduce \
