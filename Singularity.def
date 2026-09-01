@@ -20,29 +20,33 @@ From: vllm/vllm-openai:glm53-flash-cu129
     echo "=== vendor manifest ==="
     cat /opt/glm53-sm80/vendor/MANIFEST.txt
 
-    VLLM_ROOT="$(python -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent)')"
+    PYTHON_BIN="$(command -v python3 || command -v python)"
+    test -n "${PYTHON_BIN}"
+    echo "PYTHON_BIN=${PYTHON_BIN}"
+
+    VLLM_ROOT="$(${PYTHON_BIN} -c 'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent)')"
     echo "VLLM_ROOT=${VLLM_ROOT}"
-    python -c 'import vllm; print("BASE_VLLM_VERSION=" + vllm.__version__)'
+    "${PYTHON_BIN}" -c 'import vllm; print("BASE_VLLM_VERSION=" + vllm.__version__)'
 
     # The GLM day-0 image has a slightly newer blocking-event form than the
     # original #47644 diff. Apply the exact base-specific compatibility hunk first.
-    python /opt/glm53-sm80/patch_47644_compat.py \
+    "${PYTHON_BIN}" /opt/glm53-sm80/patch_47644_compat.py \
       --vllm-root "${VLLM_ROOT}"
 
-    python /opt/glm53-sm80/patch_runtime.py \
+    "${PYTHON_BIN}" /opt/glm53-sm80/patch_runtime.py \
       --vllm-root "${VLLM_ROOT}" \
       --vendor /opt/glm53-sm80/vendor \
       --backup-root /opt/glm53-sm80/stock
 
-    python /opt/glm53-sm80/patch_glm53_tail.py \
+    "${PYTHON_BIN}" /opt/glm53-sm80/patch_glm53_tail.py \
       --vllm-root "${VLLM_ROOT}" \
       --vendor /opt/glm53-sm80/vendor
 
-    python /opt/glm53-sm80/verify_static.py --vllm-root "${VLLM_ROOT}"
+    "${PYTHON_BIN}" /opt/glm53-sm80/verify_static.py --vllm-root "${VLLM_ROOT}"
 
     # Keep build provenance inside the image.
     cp /opt/glm53-sm80/vendor/MANIFEST.txt /opt/glm53-sm80/BUILD_MANIFEST.txt
-    python -c 'import vllm; print(vllm.__version__)' > /opt/glm53-sm80/BASE_VLLM_VERSION.txt
+    "${PYTHON_BIN}" -c 'import vllm; print(vllm.__version__)' > /opt/glm53-sm80/BASE_VLLM_VERSION.txt
 
 %environment
     export PYTHONUNBUFFERED=1
