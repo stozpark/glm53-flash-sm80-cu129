@@ -56,12 +56,14 @@ def main() -> None:
     must(t, "return [MultipleOf(64)]", "Mrzhiyao 64-multiple block-size policy")
 
     t = files["kernel"].read_text()
-    must(t, "_SUPPORTED_DIM_QK = (_BLOCK_DMODEL, _DIM_QK)", "Mrzhiyao 512/576 geometry")
-    must(t, "KV_SPLITS_CANDIDATES = (1, 2, 4, 8, 16)", "Mrzhiyao split-KV candidates")
+    must(t, "_SUPPORTED_DIM_QK = (_BLOCK_DMODEL, _DIM_QK)", "512/576 geometry")
+    must(t, "KV_SPLITS_CANDIDATES = (1, 2, 4, 8, 16)", "split-KV candidates")
     must(t, "block_dpe = dim_qk - _BLOCK_DMODEL", "NoPE geometry dispatch")
     must(t, "if BLOCK_DPE > 0:", "compile-time RoPE pruning")
     must(t, "e_sum_safe = tl.where", "empty-row NaN guard")
     must(t, "_SPLIT_MAX_OCCUPANCY = 4", "occupancy-aware split heuristic")
+    if t.count(".to(tl.int64) * stride_kv_token") != 3:
+        raise RuntimeError("verification failed: sparse MLA KV row offsets are not int64 at all 3 load sites")
 
     t = files["mqa"].read_text()
     must(t, ".to(tl.int64)", "large-stride block index")
@@ -70,23 +72,23 @@ def main() -> None:
 
     t = files["indexer_meta"].read_text()
     must(t, "is_deep_gemm_supported", "architecture-aware metadata gate")
+    must(t, "out_full=self.tail_slot_mapping_buffer", "KPoolTail persistent mapping")
+    must(t, "out_full.fill_(-1)", "KPoolTail padded sentinel")
+    must(t, "seq_lens[:num_decodes] // self.compress_ratio", "MTP padded seq_lens fix")
+    must(t, "KpoolTailMetadataBuilder requires CommonAttentionMetadata.positions", "KPoolTail positions contract")
 
     t = files["kpool"].read_text()
     must(t, "fp8_mqa_logits_triton", "KPool prefill SM80 fallback")
     must(t, "fp8_paged_mqa_logits_triton", "KPool decode SM80 fallback")
     must(t, "seq_lens[:, -1].contiguous()", "MTP 2D seq_lens fix")
     must(t, "is_deep_gemm_supported", "KPool architecture gate")
-    must(t, "DeepGEMM unavailable; using SM80 Triton sparse-indexer fallback.", "KPool DeepGEMM fallback marker")
-    must_not(t, "Sparse Attention Indexer CUDA op requires DeepGEMM to be installed.", "stale KPool DeepGEMM hard gate")
+    must(t, "DeepGEMM unavailable; using SM80 Triton sparse-indexer fallback.", "DeepGEMM fallback marker")
+    must(t, "persistent_topk operates on pool-granular logits", "KPool persistent_topk pool-width fix")
+    must_not(t, "Sparse Attention Indexer CUDA op requires DeepGEMM to be installed.", "stale DeepGEMM hard gate")
+    must_not(t, "select_k,\n                attn_metadata_narrowed.max_seq_len", "stale token-granular persistent_topk width")
 
     t = files["runner"].read_text()
     must(t, "if self.vllm_config.max_concurrent_batches > 1:", "#47644 PP race fix")
-
-    t = files["indexer_meta"].read_text()
-    must(t, "out_full=self.tail_slot_mapping_buffer", "KPoolTail persistent mapping")
-    must(t, "out_full.fill_(-1)", "KPoolTail padded sentinel")
-    must(t, "seq_lens[:num_decodes] // self.compress_ratio", "MTP padded seq_lens fix")
-    must(t, "KpoolTailMetadataBuilder requires CommonAttentionMetadata.positions", "KPoolTail positions contract")
 
     t = files["model_runner"].read_text()
     must(t, "slot_mapping_enabled=slot_mapping_enabled", "KPoolTail generic slot-map exclusion wiring")
