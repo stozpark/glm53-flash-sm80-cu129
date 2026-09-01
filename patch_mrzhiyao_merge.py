@@ -18,17 +18,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 
 def patch_backend(text: str) -> str:
-    """Keep #54031 FlashMLA plumbing, import only Mrzhiyao's SM80 tuning.
-
-    Mrzhiyao's final backend inherits XPUMLASparseImpl. We intentionally do
-    not replace the cu129-adapted FlashMLASparseImpl plumbing because it owns
-    chunked-prefill routing, index globalization and the NoPE-aware MQA path
-    already validated by the pinned base/source audit.
-
-    The useful backend-level change is allowing 64-multiple KV block sizes,
-    rather than forcing exactly 64. This keeps GLM's indexer constraint while
-    permitting 128 when explicitly selected/profiled.
-    """
+    """Keep #54031 FlashMLA plumbing, import only Mrzhiyao's SM80 tuning."""
     if "MultipleOf" not in text:
         anchor = "from vllm.utils.platform_utils import num_compute_units\n"
         text = replace_once(
@@ -49,12 +39,35 @@ def patch_backend(text: str) -> str:
             + "\n"
             + "    @staticmethod\n"
             + "    def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:\n"
-            + "        # GLM sparse indexer requires a 64-aligned cache group.\n"
-            + "        # Mrzhiyao's A800 deployment validated allowing larger\n"
-            + "        # multiples (e.g. 128) instead of forcing exactly 64.\n"
             + "        return [MultipleOf(64)]\n"
         )
         text = replace_once(text, anchor, addition, "MultipleOf(64) policy")
+    return text
+
+
+def patch_kernel_long_context(text: str) -> str:
+    """Promote KV element offsets to int64.
+
+    At ~1M context the flat KV element offset can exceed int32 even though the
+    row index itself still fits. This is the exact correctness hardening from
+    wtdcode/vllm-backport commit 36c83fdc.
+    """
+    replacements = (
+        (
+            "indices[None, :] * stride_kv_token",
+            "indices[None, :].to(tl.int64) * stride_kv_token",
+        ),
+        (
+            "indices[:, None] * stride_kv_token",
+            "indices[:, None].to(tl.int64) * stride_kv_token",
+        ),
+    )
+    for old, new in replacements:
+        if old in text:
+            text = text.replace(old, new)
+    expected = text.count(".to(tl.int64) * stride_kv_token")
+    if expected != 3:
+        die(f"sparse MLA int64 row-offset hardening: expected 3 sites, found {expected}")
     return text
 
 
@@ -75,11 +88,12 @@ def main() -> None:
     if not mrz_kernel.exists():
         die(f"missing pinned Mrzhiyao kernel: {mrz_kernel}")
 
-    # Exact A800-validated kernel snapshot. It preserves the same public
-    # triton_mla_sparse_attention() interface used by #54031 while carrying
-    # the final 512/576 geometry cleanup and production-tested split-KV path.
+    # Start from the A800-validated Mrzhiyao kernel, then apply the later
+    # long-context int64 row-offset correctness fix from wtdcode.
     shutil.copy2(mrz_kernel, kernel)
-    print(f"[mrzhiyao] kernel -> {kernel}")
+    ktext = patch_kernel_long_context(kernel.read_text(encoding="utf-8"))
+    kernel.write_text(ktext, encoding="utf-8")
+    print(f"[mrzhiyao] kernel + int64 long-context hardening -> {kernel}")
 
     text = backend.read_text(encoding="utf-8")
     backend.write_text(patch_backend(text), encoding="utf-8")
