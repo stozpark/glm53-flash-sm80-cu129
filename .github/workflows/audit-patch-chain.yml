@@ -58,6 +58,7 @@ jobs:
           cp -a source-backup/backup/vendor/. /tmp/vendor/
           mkdir -p /tmp/vendor/a800
           cp /tmp/vendor/backport/kpool_compress.py /tmp/vendor/a800/kpool_compress.py
+          test -s /tmp/vendor/mrzhiyao/triton_mla_sparse_kernel.py
 
       - name: Apply complete patch chain to exact base snapshot
         run: |
