@@ -45,14 +45,18 @@ def main() -> None:
     must(t, "AttentionBackendEnum.TRITON_MLA_SPARSE", "SM80 backend priority")
 
     t = files["backend"].read_text()
-    must(t, "class TritonMLASparseImpl(FlashMLASparseImpl)", "#54031 plumbing")
+    must(t, "class TritonMLASparseImpl(FlashMLASparseImpl)", "#54031 FlashMLA plumbing retained")
     must(t, "return [512, 576]", "NoPE/RoPE head sizes")
     must(t, 'return "TRITON_MLA_SPARSE"', "backend name")
+    must(t, "return [MultipleOf(64)]", "Mrzhiyao 64-multiple block-size policy")
 
     t = files["kernel"].read_text()
+    must(t, "_SUPPORTED_DIM_QK = (_BLOCK_DMODEL, _DIM_QK)", "Mrzhiyao 512/576 geometry")
+    must(t, "KV_SPLITS_CANDIDATES = (1, 2, 4, 8, 16)", "Mrzhiyao split-KV candidates")
     must(t, "block_dpe = dim_qk - _BLOCK_DMODEL", "NoPE geometry dispatch")
     must(t, "if BLOCK_DPE > 0:", "compile-time RoPE pruning")
     must(t, "e_sum_safe = tl.where", "empty-row NaN guard")
+    must(t, "_SPLIT_MAX_OCCUPANCY = 4", "occupancy-aware split heuristic")
 
     t = files["mqa"].read_text()
     must(t, ".to(tl.int64)", "large-stride block index")
