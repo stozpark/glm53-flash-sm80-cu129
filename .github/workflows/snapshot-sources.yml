@@ -27,11 +27,12 @@ jobs:
           PR54031=b325d908656d05e2a650ec60666ccec6f4f3eb0c
           PR47644=79dba7a8d83d69e0ce1b128573a1b61768eeef4e
           BACKPORT=0ef4bff219c098d48cf16d3d63ebef329e9b74b0
+          MRZHIYAO=daeccb983ec84756cde7408b0e29161d492ea2c5
           BASE=487ecf187
 
-          rm -rf backup/vendor backup/base487 backup/backport-reference backup/a800-reference backup/pr-diffs
-          mkdir -p backup/vendor/pr47629 backup/vendor/pr54031 backup/vendor/backport
-          mkdir -p backup/base487 backup/backport-reference backup/pr-diffs
+          rm -rf backup/vendor backup/base487 backup/backport-reference backup/a800-reference backup/pr-diffs backup/mrzhiyao-reference
+          mkdir -p backup/vendor/pr47629 backup/vendor/pr54031 backup/vendor/backport backup/vendor/mrzhiyao
+          mkdir -p backup/base487 backup/backport-reference backup/pr-diffs backup/mrzhiyao-reference
 
           get() { mkdir -p "$(dirname "$2")"; curl -fL --retry 5 "$1" -o "$2"; }
 
@@ -45,13 +46,15 @@ jobs:
               backup/vendor/backport/fp8_sm80.py
           get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/vllm/models/glm5next/nvidia/ops/kpool_compress.py" \
               backup/vendor/backport/kpool_compress.py
+          get "https://raw.githubusercontent.com/Mrzhiyao/glm53-a800-vllm/${MRZHIYAO}/overrides/vllm/v1/attention/ops/triton_mla_sparse_kernel.py" \
+              backup/vendor/mrzhiyao/triton_mla_sparse_kernel.py
+          get "https://raw.githubusercontent.com/Mrzhiyao/glm53-a800-vllm/${MRZHIYAO}/overrides/vllm/v1/attention/backends/mla/triton_mla_sparse.py" \
+              backup/vendor/mrzhiyao/triton_mla_sparse.py
 
-          # Preserve the complete PR diffs as historical/reference material.
           get "https://github.com/vllm-project/vllm/pull/47629.diff" backup/pr-diffs/47629.diff
           get "https://github.com/vllm-project/vllm/pull/54031.diff" backup/pr-diffs/54031.diff
           get "https://github.com/vllm-project/vllm/pull/47644.diff" backup/pr-diffs/47644.diff
 
-          # Exact glm53-flash-cu129 source baseline files touched by this project.
           for p in \
             vllm/platforms/cuda.py \
             vllm/v1/attention/backends/registry.py \
@@ -67,7 +70,6 @@ jobs:
             get "https://raw.githubusercontent.com/vllm-project/vllm/${BASE}/${p}" "backup/base487/${p}"
           done
 
-          # Keep full reference versions containing the later Ampere fixes too.
           for p in \
             vllm/v1/attention/backends/mla/indexer.py \
             vllm/model_executor/layers/sparse_attn_indexer_kpool.py \
@@ -80,8 +82,16 @@ jobs:
             get "https://raw.githubusercontent.com/wtdcode/vllm-backport/${BACKPORT}/${p}" "backup/backport-reference/${p}"
           done
 
-          # Historical A800 implementation. Failure here is non-fatal because it is
-          # comparison material only; the actual build no longer depends on Gitee.
+          for p in \
+            overrides/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
+            overrides/vllm/v1/attention/backends/mla/xpu_mla_sparse.py \
+            overrides/vllm/v1/attention/ops/triton_mla_sparse_kernel.py \
+            overrides/vllm/models/glm5next/nvidia/ops/kpool_compress.py \
+            overrides/vllm/models/glm5next/nvidia/attention.py \
+            overrides/vllm/models/glm5next/nvidia/model.py; do
+            get "https://raw.githubusercontent.com/Mrzhiyao/glm53-a800-vllm/${MRZHIYAO}/${p}" "backup/mrzhiyao-reference/${p}"
+          done
+
           if git clone --depth 1 https://gitee.com/kill-life/glm5.3-flash-deployment-a800.git backup/a800-reference; then
             rm -rf backup/a800-reference/.git
             rm -f backup/A800_SNAPSHOT_FAILED.txt
@@ -96,8 +106,9 @@ jobs:
             echo "PR54031=${PR54031}"
             echo "PR47644=${PR47644}"
             echo "BACKPORT=${BACKPORT}"
+            echo "MRZHIYAO=${MRZHIYAO}"
             echo
-            find backup/vendor backup/base487 backup/backport-reference backup/pr-diffs -type f -print0 | sort -z | xargs -0 sha256sum
+            find backup/vendor backup/base487 backup/backport-reference backup/mrzhiyao-reference backup/pr-diffs -type f -print0 | sort -z | xargs -0 sha256sum
           } > backup/SHA256SUMS.txt
 
       - name: Commit snapshot
