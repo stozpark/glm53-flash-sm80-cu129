@@ -24,7 +24,10 @@ mkdir -p "${CACHE_DIR}/vllm" "${CACHE_DIR}/triton" "${CACHE_DIR}/hf"
 if command -v apptainer >/dev/null 2>&1; then R=apptainer; else R=singularity; fi
 
 # Correctness-first launch: MTP and prefix caching intentionally OFF.
-# sparse_mla_force_mqa=true intentionally exercises the new sparse path even for short prompts.
+# Force the backend through AttentionConfig itself. On glm53-flash-cu129 the
+# legacy VLLM_ATTENTION_BACKEND environment variable is not the authoritative
+# selector when --attention-config is present; leaving backend unset takes the
+# automatic-selection path.
 nohup "${R}" exec --nv \
   --bind "${MODEL_HOST_PATH}:${MODEL_CONTAINER_PATH}:ro" \
   --bind "${CACHE_DIR}:/glm53_cache" \
@@ -36,7 +39,6 @@ nohup "${R}" exec --nv \
   --env TRITON_CACHE_DIR=/glm53_cache/triton \
   --env VLLM_CACHE_ROOT=/glm53_cache/vllm \
   --env VLLM_TEST_FORCE_FP8_MARLIN=1 \
-  --env VLLM_ATTENTION_BACKEND=TRITON_MLA_SPARSE \
   --env VLLM_ENGINE_READY_TIMEOUT_S=3600 \
   --env PYTHONUNBUFFERED=1 \
   --env VLLM_LOGGING_LEVEL=INFO \
@@ -61,7 +63,7 @@ nohup "${R}" exec --nv \
     --max-num-seqs "${MAX_SEQS}" \
     --max-num-batched-tokens "${MAX_BATCHED_TOKENS}" \
     --kv-cache-dtype bfloat16 \
-    --attention-config '{"sparse_mla_force_mqa": true}' \
+    --attention-config '{"backend":"TRITON_MLA_SPARSE","sparse_mla_force_mqa":true}' \
     --moe-backend marlin \
     --no-enable-flashinfer-autotune \
     "$@" \
