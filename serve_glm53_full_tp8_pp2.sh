@@ -44,6 +44,7 @@ ARGS=(
   --linear-backend marlin
   --moe-backend marlin
   --enable-expert-parallel
+  --no-enable-prefix-caching
   --gpu-memory-utilization "${GMU}"
   --max-model-len "${MAX_MODEL_LEN}"
   --max-num-seqs "${MAX_SEQS}"
