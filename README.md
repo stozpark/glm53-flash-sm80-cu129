@@ -354,7 +354,7 @@ model weights   = FP8
 ```bash
 git checkout glm53-full-sm80
 
-./build_glm53_full_sm80_sif.sh \
+bash ./build_glm53_full_sm80_sif.sh \
   /path/to/glm53-full-sm80-vllm029-cu129.sif
 ```
 
@@ -362,7 +362,7 @@ fakeroot가 필요하면:
 
 ```bash
 BUILD_FLAGS=--fakeroot \
-  ./build_glm53_full_sm80_sif.sh \
+  bash ./build_glm53_full_sm80_sif.sh \
   /path/to/glm53-full-sm80-vllm029-cu129.sif
 ```
 
@@ -391,7 +391,7 @@ MODEL_HOST_PATH=/models/GLM-5.3 \
 SIF_PATH=/path/to/glm53-full-sm80-vllm029-cu129.sif \
 MASTER_ADDR=<NODE0_IP> \
 NODE_RANK=0 \
-./serve_glm53_full_tp8_pp2.sh
+bash ./serve_glm53_full_tp8_pp2.sh
 ```
 
 ## node 1
@@ -401,7 +401,7 @@ MODEL_HOST_PATH=/models/GLM-5.3 \
 SIF_PATH=/path/to/glm53-full-sm80-vllm029-cu129.sif \
 MASTER_ADDR=<NODE0_IP> \
 NODE_RANK=1 \
-./serve_glm53_full_tp8_pp2.sh
+bash ./serve_glm53_full_tp8_pp2.sh
 ```
 
 기본값:
@@ -431,7 +431,7 @@ MTP=OFF
 ```bash
 MODEL_HOST_PATH=/models/GLM-5.3 \
 SIF_PATH=/path/to/glm53-full-sm80-vllm029-cu129.sif \
-./serve_glm53_full_tp16.sh
+bash ./serve_glm53_full_tp16.sh
 ```
 
 를 사용할 수 있습니다.
