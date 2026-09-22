@@ -1,0 +1,61 @@
+name: Validate GLM-5.3 full SM80 port
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-glm53-full-sm80.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout port branch
+        uses: actions/checkout@v4
+        with:
+          ref: glm53-full-sm80
+          path: port
+
+      - name: Checkout vLLM 0.29.0
+        uses: actions/checkout@v4
+        with:
+          repository: vllm-project/vllm
+          ref: v0.29.0
+          path: vllm029
+
+      - name: Apply SM80 port
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 port/patch_glm53_full_sm80.py \
+            --vllm-root "$PWD/vllm029/vllm" \
+            --vendor "$PWD/port/vendor/glm53-full-sm80"
+
+      - name: Compile patched Python
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m py_compile \
+            vllm029/vllm/v1/attention/backends/registry.py \
+            vllm029/vllm/platforms/cuda.py \
+            vllm029/vllm/v1/attention/backends/mla/indexer.py \
+            vllm029/vllm/model_executor/layers/sparse_attn_indexer.py \
+            vllm029/vllm/models/deepseek_v32/nvidia/model.py \
+            vllm029/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
+            vllm029/vllm/v1/attention/ops/mqa_logits_triton.py \
+            vllm029/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
+
+      - name: Check port invariants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q 'TRITON_MLA_SPARSE' vllm029/vllm/platforms/cuda.py
+          grep -q 'using the Triton DSA indexer fallback' vllm029/vllm/model_executor/layers/sparse_attn_indexer.py
+          grep -q '_sm80_pp_topk_relay_buf' vllm029/vllm/models/deepseek_v32/nvidia/model.py
+          grep -q 'indices.to(tl.int64)' vllm029/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
+          grep -q ').to(tl.int64)' vllm029/vllm/v1/attention/ops/mqa_logits_triton.py
+          echo GLM53_FULL_SM80_STATIC=PASS
