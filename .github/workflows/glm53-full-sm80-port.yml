@@ -1,0 +1,37 @@
+name: Port GLM-5.3 full to SM80
+
+on:
+  push:
+    branches: [glm53-full-sm80]
+    paths:
+      - '.github/workflows/glm53-full-sm80-port.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: glm53-full-sm80
+      - name: Probe PR 38476 against vLLM 0.29.0
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf /tmp/vllm
+          git clone --filter=blob:none --branch v0.29.0 https://github.com/vllm-project/vllm.git /tmp/vllm
+          cd /tmp/vllm
+          git fetch origin pull/38476/head:pr-38476
+          git config user.name port-bot
+          git config user.email port-bot@example.invalid
+          if git cherry-pick --no-commit pr-38476; then
+            echo CHERRYPICK=PASS
+          else
+            echo CHERRYPICK=CONFLICT
+            git status --short
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
