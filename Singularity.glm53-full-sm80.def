@@ -1,0 +1,34 @@
+Bootstrap: docker
+From: vllm/vllm-openai:v0.29.0-cu129
+
+%files
+    patch_glm53_full_sm80.py /opt/glm53-full-sm80/patch_glm53_full_sm80.py
+    vendor/glm53-full-sm80 /opt/glm53-full-sm80/vendor/glm53-full-sm80
+
+%post
+    set -eux
+    PYTHON_BIN="$(command -v python3 || command -v python)"
+    VLLM_ROOT="$("${PYTHON_BIN}" - <<'PY'
+import pathlib, vllm
+print(pathlib.Path(vllm.__file__).resolve().parent)
+PY
+)"
+    "${PYTHON_BIN}" /opt/glm53-full-sm80/patch_glm53_full_sm80.py \
+        --vllm-root "${VLLM_ROOT}" \
+        --vendor /opt/glm53-full-sm80/vendor/glm53-full-sm80
+    "${PYTHON_BIN}" -m py_compile \
+        "${VLLM_ROOT}/v1/attention/backends/registry.py" \
+        "${VLLM_ROOT}/platforms/cuda.py" \
+        "${VLLM_ROOT}/v1/attention/backends/mla/indexer.py" \
+        "${VLLM_ROOT}/model_executor/layers/sparse_attn_indexer.py" \
+        "${VLLM_ROOT}/models/deepseek_v32/nvidia/model.py" \
+        "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py" \
+        "${VLLM_ROOT}/v1/attention/ops/mqa_logits_triton.py" \
+        "${VLLM_ROOT}/v1/attention/ops/triton_mla_sparse_kernel.py"
+    grep -q TRITON_MLA_SPARSE "${VLLM_ROOT}/platforms/cuda.py"
+    grep -q _sm80_pp_topk_relay_buf "${VLLM_ROOT}/models/deepseek_v32/nvidia/model.py"
+    echo GLM53_FULL_SM80_STATIC=PASS
+
+%environment
+    export VLLM_ENABLE_CUDA_COMPATIBILITY=1
+    export VLLM_CUDA_COMPATIBILITY_PATH=/usr/local/cuda-12.9/compat
