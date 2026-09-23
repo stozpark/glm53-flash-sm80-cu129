@@ -37,9 +37,7 @@ def reference_encode(x: float) -> int:
     b = bits_from_f32(x)
     sign = (b >> 24) & 0x80
     magbits = b & 0x7FFFFFFF
-    if magbits > 0x7F800000:
-        return sign | 0x7F
-    if magbits == 0x7F800000:
+    if magbits >= 0x7F800000:
         return sign | 0x7E
 
     mag = abs(f32_from_bits(magbits))
@@ -66,7 +64,7 @@ def ported_triton_encoder(x: float) -> int:
     fbits = bits_from_f32(x)
     sign8 = (fbits >> 24) & 0x80
     mag = fbits & 0x7FFFFFFF
-    is_nan = mag > 0x7F800000
+    non_finite = mag >= 0x7F800000
 
     exp = (mag >> 23) - 127
     mant = (mag & 0x7FFFFF) | 0x800000
@@ -82,8 +80,8 @@ def ported_triton_encoder(x: float) -> int:
     val_normal = ((exp + 6) << 3) + keep
     val = val_normal if exp >= -6 else keep
     val = min(val, 0x7E)
-    if is_nan:
-        val = 0x7F
+    if non_finite:
+        val = 0x7E
     return (val & 0x7F) | sign8
 
 
@@ -143,7 +141,36 @@ def main() -> None:
             f"got=0x{got:02x} want=0x{want:02x}"
         )
 
-    print(f"SM80_E4M3FN_REFERENCE=PASS samples={len(samples)}")
+    # Exhaust every FP16 and BF16 input bit pattern, mirroring the strongest
+    # portable-conversion validation in vLLM #55173 without requiring CUDA.
+    for raw16 in range(1 << 16):
+        half = struct.unpack("<e", struct.pack("<H", raw16))[0]
+        got = ported_triton_encoder(half)
+        want = reference_encode(half)
+        assert got == want, (
+            f"FP16 E4M3 mismatch raw=0x{raw16:04x} x={half!r} "
+            f"got=0x{got:02x} want=0x{want:02x}"
+        )
+
+        bf16 = f32_from_bits(raw16 << 16)
+        got = ported_triton_encoder(bf16)
+        want = reference_encode(bf16)
+        assert got == want, (
+            f"BF16 E4M3 mismatch raw=0x{raw16:04x} x={bf16!r} "
+            f"got=0x{got:02x} want=0x{want:02x}"
+        )
+
+    # Explicit non-finite contract: preserve sign and saturate, never emit FP8 NaN.
+    assert ported_triton_encoder(float("inf")) == 0x7E
+    assert ported_triton_encoder(-float("inf")) == 0xFE
+    assert ported_triton_encoder(float("nan")) == 0x7E
+    neg_nan = f32_from_bits(0xFFC00000)
+    assert ported_triton_encoder(neg_nan) == 0xFE
+
+    print(
+        f"SM80_E4M3FN_REFERENCE=PASS random_and_edges={len(samples)} "
+        "fp16_patterns=65536 bf16_patterns=65536"
+    )
 
 
 if __name__ == "__main__":
