@@ -183,8 +183,9 @@ bash ./build_glm53_full_sm80_sif.sh \
 
 ## GPU smoke
 
-full 756GB checkpoint를 읽기 전에 SIF 안의 실제 Triton kernels를 A100에서
-검증할 수 있습니다.
+full checkpoint를 읽기 전에 SIF 안의 실제 Triton kernels를 A100에서
+검증할 수 있습니다. Production launcher도 기본적으로 각 노드에서 이 smoke를
+한 번 실행한 뒤 서버를 시작합니다 (`RUN_GPU_SMOKE=1`).
 
 ```bash
 GPU=0 bash ./verify_glm53_full_sm80_sif.sh \
@@ -203,6 +204,8 @@ GLM53_FULL_SM80_GPU_SMOKE=PASS
 ```
 
 smoke test도 실제 GLM-5.3처럼 `indexer_rope_interleave=true`를 사용합니다.
+또한 launcher는 SIF 내부의 `PORT_REVISION`과 vLLM 0.30.0, 필수 patch marker를
+확인하므로 오래된 SIF를 실수로 실행하면 full model load 전에 실패합니다.
 
 ## Run: 2 nodes x 8 A100
 
@@ -238,20 +241,40 @@ NET_IFACE=ens11np0
 
 ## 현재 검증 상태
 
-GitHub CI에서 다음을 검증합니다.
+GitHub CI에서 현재 다음을 모두 검증합니다.
 
+- live `zai-org/GLM-5.3/config.json` contract
+  - `GlmMoeDsaForCausalLM / glm_moe_dsa`
+  - 78 layers / 6144 hidden / 256 routed experts
+  - indexer 32x128 / top-k 2048 / interleaved RoPE
+  - layer 38 full, 39 shared, 42 full
+  - dynamic E4M3 / weight block `[128,128]`
 - exact vLLM 0.30.0 source에 patch 적용
-- 모든 patched Python module compile
-- SM80 software-FP8 active path에 native fp8 cast가 남지 않았는지 검사
+- patch가 의도한 10개 source에만 한정되는지 scope 검사
+- patch를 두 번 적용해도 byte-identical인지 idempotence 검사
+- `git diff --check` 및 모든 patched Python module compile
+- v0.30 model registry가 full GLM을 DeepSeek-V3.2 path로 라우팅하는지 검사
+- GLM MoE router FP32 처리와 `glm47` tool/reasoning parser 존재 확인
+- v0.30 CLI에 production launcher의 모든 option 존재 확인
+- FP8 128x128 block quantization -> Marlin linear/MoE support 확인
+- SM80 software E4M3FN reference 검사
+  - random/edge float32 100k+
+  - FP16 전체 65,536 bit patterns
+  - BF16 전체 65,536 bit patterns
+  - signed NaN/Inf/overflow saturating semantics
+- active index-Q/index-K path에 native `tl.float8e4nv` cast가 남지 않았는지 검사
 - `record_logical_topk_ready()` compatibility hook
-- PIECEWISE KV-binding fix
-- 64-token DSA page
-- 42/36 PP production partition
-- production launcher: graph ON / prefix cache ON
+- #54851-equivalent PIECEWISE KV-binding fix
+- exact 64-token DSA page contract
+- 42/36 PP partition이 두 stage 모두 full-indexer layer에서 시작하는지 검사
+- obsolete V1 #47644 / custom PP Top-K relay / global BlockTable mutation 부재 확인
+- production launcher: native MP / graph ON / prefix cache ON / SIF revision preflight
 - shell syntax
 
-CI는 CPU/static 검증입니다. 실제 A100 Triton JIT 및 full GLM-5.3 E2E는
-A100 서버에서 SIF smoke / serving으로 확인해야 합니다.
+이 CI가 확인할 수 없는 것은 **실제 SM80 GPU 실행 자체**입니다. 따라서 남은
+하드웨어 의존 검증은 A100에서의 Triton JIT/numerical smoke, 16-GPU NCCL/PP
+initialization, Marlin weight load/repack peak memory, CUDA-graph replay 및 실제
+generation E2E입니다.
 
 ## Main files
 
@@ -263,4 +286,7 @@ build_glm53_full_sm80_sif.sh
 verify_glm53_full_sm80_sif.sh
 serve_glm53_full_tp8_pp2.sh
 tests/sm80_glm53_full_kernel_smoke.py
+tests/validate_glm53_full_static.py
+tests/test_fp8e4m3fn_reference.py
+PORT_REVISION
 ```
