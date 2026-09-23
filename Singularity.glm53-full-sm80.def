@@ -5,6 +5,7 @@ From: vllm/vllm-openai:v0.30.0
     patch_glm53_full_sm80.py /opt/glm53-full-sm80/patch_glm53_full_sm80.py
     vendor/glm53-full-sm80 /opt/glm53-full-sm80/vendor/glm53-full-sm80
     tests/sm80_glm53_full_kernel_smoke.py /opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py
+    PORT_REVISION /opt/glm53-full-sm80/PORT_REVISION
 
 %post
     set -eux
@@ -32,4 +33,5 @@ PY
     grep -q SM80_PIECEWISE_KV_BINDING_FIX "${VLLM_ROOT}/models/deepseek_v32/attention.py"
     ! grep -q _sm80_pp_topk_relay_buf "${VLLM_ROOT}/models/deepseek_v32/nvidia/model.py"
     grep -q _encode_e4m3fn_u8 "${VLLM_ROOT}/models/deepseek_v32/common/kernels.py"
+    test "$(cat /opt/glm53-full-sm80/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260923-3"
     echo GLM53_FULL_SM80_STATIC=PASS
