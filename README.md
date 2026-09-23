@@ -1,4 +1,4 @@
-# GLM-5.3 on A100/A800 (SM80) / CUDA 12.9
+# GLM-5.3 on A100/A800 (SM80) / CUDA 13.0
 
 이 브랜치는 **full `zai-org/GLM-5.3`**를 NVIDIA A100/A800(SM80)에서 실행하기 위한 포팅 브랜치입니다.
 
@@ -6,8 +6,8 @@
 
 ## 현재 상태
 
-- 기준 vLLM: **v0.29.0**
-- 기준 CUDA image: **`vllm/vllm-openai:v0.29.0-cu129`**
+- 기준 vLLM: **v0.30.0**
+- 기준 CUDA image: **`vllm/vllm-openai:v0.30.0-cu129`**
 - 대상 GPU: **A100/A800 (SM80)**
 - 권장 16-GPU 토폴로지: **2 nodes × 8 A100, TP8 × PP2**
 - main KV cache: **BF16**
@@ -19,7 +19,7 @@
 
 ### 확인한 것
 
-2026-09-22 기준으로 이 브랜치의 patcher를 **vLLM v0.29.0 원본 checkout에 실제 적용**했고 다음을 확인했습니다.
+2026-09-22 기준으로 이 브랜치의 patcher를 **vLLM v0.30.0 원본 checkout에 실제 적용**했고 다음을 확인했습니다.
 
 ```text
 GLM53_FULL_SM80_PATCH=PASS
@@ -355,7 +355,7 @@ model weights   = FP8
 git checkout glm53-full-sm80
 
 bash ./build_glm53_full_sm80_sif.sh \
-  /path/to/glm53-full-sm80-vllm029-cu129.sif
+  /path/to/glm53-full-sm80-vllm030-cu130.sif
 ```
 
 fakeroot가 필요하면:
@@ -363,7 +363,7 @@ fakeroot가 필요하면:
 ```bash
 BUILD_FLAGS=--fakeroot \
   bash ./build_glm53_full_sm80_sif.sh \
-  /path/to/glm53-full-sm80-vllm029-cu129.sif
+  /path/to/glm53-full-sm80-vllm030-cu130.sif
 ```
 
 빌드 중 다음이 나와야 합니다.
@@ -388,7 +388,7 @@ GLM53_FULL_SM80_STATIC=PASS
 
 ```bash
 MODEL_HOST_PATH=/models/GLM-5.3 \
-SIF_PATH=/path/to/glm53-full-sm80-vllm029-cu129.sif \
+SIF_PATH=/path/to/glm53-full-sm80-vllm030-cu130.sif \
 MASTER_ADDR=<NODE0_IP> \
 NODE_RANK=0 \
 bash ./serve_glm53_full_tp8_pp2.sh
@@ -398,7 +398,7 @@ bash ./serve_glm53_full_tp8_pp2.sh
 
 ```bash
 MODEL_HOST_PATH=/models/GLM-5.3 \
-SIF_PATH=/path/to/glm53-full-sm80-vllm029-cu129.sif \
+SIF_PATH=/path/to/glm53-full-sm80-vllm030-cu130.sif \
 MASTER_ADDR=<NODE0_IP> \
 NODE_RANK=1 \
 bash ./serve_glm53_full_tp8_pp2.sh
@@ -430,7 +430,7 @@ MTP=OFF
 
 ```bash
 MODEL_HOST_PATH=/models/GLM-5.3 \
-SIF_PATH=/path/to/glm53-full-sm80-vllm029-cu129.sif \
+SIF_PATH=/path/to/glm53-full-sm80-vllm030-cu130.sif \
 bash ./serve_glm53_full_tp16.sh
 ```
 
@@ -470,7 +470,7 @@ vendor/glm53-full-sm80/
   외부 PR을 빌드 시 다시 다운로드하지 않도록 고정한 Triton source
 
 Singularity.glm53-full-sm80.def
-  vllm-openai:v0.29.0-cu129 기반 SIF
+  vllm-openai:v0.30.0-cu129 기반 SIF
 
 build_glm53_full_sm80_sif.sh
   SIF 빌드
@@ -486,7 +486,7 @@ serve_glm53_full_tp16.sh
 
 # 출처
 
-- vLLM v0.29.0
+- vLLM v0.30.0
 - vLLM PR #38476 — SM80 DSA Triton sparse MLA/indexer
 - `zai-org/GLM-5.3`
 - vLLM GLM-5.3 recipe
