@@ -46,9 +46,8 @@ ENFORCE_EAGER="${ENFORCE_EAGER:-1}"     # first bring-up; set 0 after correctnes
 NUMA_BIND="${NUMA_BIND:-0}"
 DISABLE_LOG_REQUESTS="${DISABLE_LOG_REQUESTS:-1}"
 
-# MTP under PP=2 is intentionally blocked in this branch. vLLM 0.29.0's
-# NVIDIA DeepseekV32MTP does not declare SupportsPP; port/validate MTP+PP
-# separately before enabling it.
+# Keep MTP disabled for the first SM80 correctness bring-up. vLLM 0.30 has
+# PP/MTP support, but this A100 port has not yet validated that combination.
 SPEC_TOKENS="${SPEC_TOKENS:-0}"
 
 # Optional API authentication.
@@ -68,23 +67,92 @@ LOG_FILE="${LOG_FILE:-${LOG_DIR}/glm53.rank${NODE_RANK:-x}.log}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+resolve_master_ipv4() {
+  if [[ "${MASTER_ADDR}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "${MASTER_ADDR}"
+    return
+  fi
+
+  local ipaddr
+  ipaddr="$(getent ahostsv4 "${MASTER_ADDR}" 2>/dev/null |
+    awk '$2 == "STREAM" {print $1; exit}')"
+  [[ -n "${ipaddr}" ]] ||
+    die "cannot resolve MASTER_ADDR=${MASTER_ADDR} to IPv4"
+  echo "${ipaddr}"
+}
+
 detect_iface() {
   if [[ -n "${NET_IFACE}" ]]; then
+    ip link show dev "${NET_IFACE}" >/dev/null 2>&1 ||
+      die "NET_IFACE does not exist: ${NET_IFACE}"
     echo "${NET_IFACE}"
     return
   fi
-  local iface
-  iface="$(ip -o route get "${MASTER_ADDR}" 2>/dev/null | awk '{
-    for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}
-  }')"
-  [[ -n "${iface}" ]] || die "cannot auto-detect network interface; set NET_IFACE"
+
+  local master_ip iface
+
+  master_ip="$(resolve_master_ipv4)"
+
+  # On rank 0 MASTER_ADDR is normally this host's own address.  In that case
+  # 'ip route get <MASTER_ADDR>' commonly returns 'dev lo', which is not the
+  # interface NCCL/Gloo should use.  First match the address to a real
+  # scope-global interface.
+  iface="$(ip -o -4 addr show scope global 2>/dev/null |
+    awk -v target="${master_ip}" '{
+      split($4, a, "/")
+      if (a[1] == target && $2 != "lo") {print $2; exit}
+    }')"
+
+  # On the other node, select the interface used to reach rank 0.
+  if [[ -z "${iface}" ]]; then
+    iface="$(ip -o route get "${master_ip}" 2>/dev/null |
+      awk '{
+        for (i=1; i<=NF; i++) {
+          if ($i == "dev" && $(i+1) != "lo") {print $(i+1); exit}
+        }
+      }')"
+  fi
+
+  # Last-resort fallback for ordinary single-default-route hosts.
+  if [[ -z "${iface}" ]]; then
+    iface="$(ip -o route show default 2>/dev/null |
+      awk '{
+        for (i=1; i<=NF; i++) {
+          if ($i == "dev" && $(i+1) != "lo") {print $(i+1); exit}
+        }
+      }')"
+  fi
+
+  if [[ -z "${iface}" ]]; then
+    echo "Available global IPv4 interfaces:" >&2
+    ip -o -4 addr show scope global >&2 || true
+    die "cannot auto-detect network interface; set NET_IFACE explicitly"
+  fi
+
   echo "${iface}"
 }
 
-iface_ip() {
+local_ip_for_iface() {
   local iface="$1"
-  ip -o -4 addr show dev "${iface}" scope global 2>/dev/null |
-    awk '{split($4,a,"/"); print a[1]; exit}'
+  local master_ip ipaddr
+
+  master_ip="$(resolve_master_ipv4)"
+
+  # Prefer the source address selected by the kernel route.  This also gives
+  # rank 0 its MASTER_ADDR even when the route itself is represented via lo.
+  ipaddr="$(ip -o route get "${master_ip}" 2>/dev/null |
+    awk '{
+      for (i=1; i<=NF; i++) {
+        if ($i == "src") {print $(i+1); exit}
+      }
+    }')"
+
+  if [[ -z "${ipaddr}" || "${ipaddr}" == "127.0.0.1" ]]; then
+    ipaddr="$(ip -o -4 addr show dev "${iface}" scope global 2>/dev/null |
+      awk '{split($4,a,"/"); print a[1]; exit}')"
+  fi
+
+  echo "${ipaddr}"
 }
 
 preflight() {
@@ -109,7 +177,7 @@ preflight() {
 
   local iface ipaddr
   iface="$(detect_iface)"
-  ipaddr="$(iface_ip "${iface}")"
+  ipaddr="$(local_ip_for_iface "${iface}")"
   [[ -n "${ipaddr}" ]] || die "no IPv4 address found on interface ${iface}"
 
   echo "node_rank=${NODE_RANK}"
@@ -188,7 +256,7 @@ run_server() {
 
   local iface local_ip rt
   iface="$(detect_iface)"
-  local_ip="$(iface_ip "${iface}")"
+  local_ip="$(local_ip_for_iface "${iface}")"
   rt="$(runtime_bin)"
   build_args
 
@@ -212,9 +280,6 @@ run_server() {
     --env NCCL_NVLS_ENABLE=0
     --env TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
-    --env 
-    --env 
-    --env 
   )
   [[ -n "${NCCL_IB_HCA}" ]] && ENV_ARGS+=(--env NCCL_IB_HCA="${NCCL_IB_HCA}")
   [[ -n "${NCCL_IB_DISABLE}" ]] && ENV_ARGS+=(--env NCCL_IB_DISABLE="${NCCL_IB_DISABLE}")
