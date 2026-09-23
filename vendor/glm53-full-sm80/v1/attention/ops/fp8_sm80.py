@@ -53,10 +53,9 @@ def get_e4m3fn_bf16_lut(
 ) -> torch.Tensor:
     """256-entry e4m3fn -> bf16 decode table.
 
-    ``nan_value`` replaces the two NaN encodings (0x7F/0xFF, signed): pass
-    a finite magnitude where NaN would poison a downstream reduction (the
-    indexer's dot product uses +-480), or leave it None for kernels that
-    scrub NaN themselves and need NaN in, NaN out.
+    ``nan_value`` replaces externally supplied NaN encodings (0x7F/0xFF,
+    signed). The SM80 software writer itself saturates NaN/Inf/overflow to
+    signed max finite, matching vLLM's portable pre-SM89 conversion contract.
     """
     key = (device, nan_value)
     lut = _E4M3FN_BF16_LUT_CACHE.get(key)
@@ -75,7 +74,7 @@ def get_e4m3fn_bf16_lut(
 
 @triton.jit
 def _f32_to_e4m3fn_u8(x):
-    """fp32 -> e4m3fn byte: RNE, saturating to +-448, NaN -> 0x7F | sign.
+    """fp32 -> e4m3fn byte: RNE, saturating non-finite/overflow to +-448.
 
     Unified integer rounding: the f32 mantissa (implicit bit materialized)
     is shifted so the kept bits land at the e4m3 granularity; the same
@@ -86,7 +85,7 @@ def _f32_to_e4m3fn_u8(x):
     sign8 = ((fbits >> 24) & 0x80).to(tl.uint8)
     mag = fbits & 0x7FFFFFFF
 
-    is_nan = mag > 0x7F800000
+    non_finite = mag >= 0x7F800000
 
     exp = (mag >> 23).to(tl.int32) - 127
     mant = (mag & 0x7FFFFF) | 0x800000
@@ -108,7 +107,9 @@ def _f32_to_e4m3fn_u8(x):
     # satfinite: every overflow (incl. inf and mantissa-carry past 448)
     # lands above 0x7E and clamps to the max finite.
     val = tl.minimum(val, 0x7E)
-    val = tl.where(is_nan, 0x7F, val)
+    # Match the portable pre-SM89 vLLM conversion contract (#55173):
+    # finite overflow, Inf and NaN saturate to signed max finite.
+    val = tl.where(non_finite, 0x7E, val)
     return (val.to(tl.uint8) | sign8).to(tl.uint8)
 
 
