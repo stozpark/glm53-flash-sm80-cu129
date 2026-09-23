@@ -48,7 +48,8 @@ jobs:
             vllm030/vllm/v1/attention/ops/fp8_sm80.py \
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
             vllm030/vllm/v1/attention/ops/mqa_logits_triton.py \
-            vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
+            vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py \
+            port/tests/sm80_glm53_full_kernel_smoke.py
 
       - name: Verify SM80 invariants
         shell: bash
@@ -113,4 +114,9 @@ jobs:
             port/serve_glm53_full_tp8_pp2.sh \
             port/serve_glm53_full_tp16.sh \
             port/build_glm53_full_sm80_sif.sh
+          bash -n port/build_glm53_full_sm80_sif.sh
+          bash -n port/verify_glm53_full_sm80_sif.sh
+          bash -n port/serve_glm53_full_tp8_pp2.sh
+          bash -n port/serve_glm53_full_tp16.sh
+          grep -q 'sm80_glm53_full_kernel_smoke.py' port/Singularity.glm53-full-sm80.def
           echo CUDA13_PROFILE=PASS
