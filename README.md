@@ -4,10 +4,73 @@
 
 > Flash 모델(`GLM-5.3-Flash`)용 브랜치가 아닙니다. full GLM-5.3은 `GlmMoeDsaForCausalLM / glm_moe_dsa`이고 DeepSeek-V3.2 계열 DSA sparse MLA 경로를 사용합니다.
 
+## 2026-09-23 포팅 기준
+
+현재 브랜치는 **`glm53-full-sm80-cu130-v030`** 입니다.
+
+- host target: NVIDIA Driver **580.173.02** / A100·A800 SM80
+- container: **vLLM 0.30.0 + CUDA 13.0** (`vllm/vllm-openai:v0.30.0`)
+- full model: `zai-org/GLM-5.3` native FP8
+- first bring-up: **BF16 main MLA KV / FP8 indexer K / MTP OFF / prefix cache OFF / eager ON**
+
+vLLM 0.30.0으로 올린 이유는 GLM-5.3/DSA/MTP 관련 최신 수정은 최대한 upstream 것을 그대로 쓰고, A100에서 실제로 막히는 SM80 전용 부분만 패치하기 위해서입니다. CUDA 13.0 이미지를 쓰므로 기존 CUDA 12.9 forward-compat 경로도 필요 없습니다.
+
+### v0.29 첫 실행에서 확인한 A100 오류
+
+첫 포팅은 sparse MLA와 DeepGEMM fallback까지만 바꿨고, 모델 profile 단계에서 다음 오류가 났습니다.
+
+```text
+ValueError: type fp8e4nv not supported in this architecture
+The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')
+```
+
+실제 실패 지점은 sparse MLA가 아니라 `deepseek_v32/common/kernels.py::fused_q`였습니다. 최신 vLLM의 DeepSeek-V3.2 fused kernel도 FP8 변환 자체는 SM89+를 전제로 합니다.
+
+현재 브랜치는 다음 두 경로를 모두 고칩니다.
+
+```text
+index Q
+  fused_q
+    native tl.float8e4nv cast
+      -> software E4M3FN byte encoder
+
+index K
+  fused_norm_rope
+    _fp8_ue8m0_quantize
+      native tl.float8e4nv cast
+        -> software E4M3FN byte encoder
+```
+
+Triton 안에서는 A100이 지원하지 않는 FP8 변환 타입을 만들지 않습니다. `uint8` storage에 E4M3FN bit pattern을 직접 쓰고, Python 경계에서만 `torch.float8_e4m3fn` zero-copy view를 사용합니다. FP8 값 자체와 scale semantics는 유지됩니다.
+
+### SIF를 여러 번 만들지 않기 위한 검증 순서
+
+이번 브랜치는 **모델을 올리기 전에 A100 한 장으로 핵심 커널을 먼저 JIT compile**할 수 있도록 smoke test를 SIF 안에 포함합니다.
+
+빌드 후 바로 full model을 띄우지 말고 먼저:
+
+```bash
+GPU=0 bash ./verify_glm53_full_sm80_sif.sh \
+  /path/to/glm53-full-sm80-vllm030-cu130.sif
+```
+
+를 실행합니다. 최종적으로 다음이 모두 나와야 합니다.
+
+```text
+SM80_FUSED_NORM_ROPE_INDEX_K=PASS
+SM80_FUSED_Q_INDEX_Q=PASS
+SM80_TRITON_MQA_PREFILL=PASS
+SM80_TRITON_MQA_DECODE=PASS
+SM80_TRITON_MLA_SPARSE=PASS
+GLM53_FULL_SM80_GPU_SMOKE=PASS
+```
+
+이 검사는 모델 가중치를 로드하지 않으므로, `fused_q`, index-K cache writer, Triton MQA, sparse MLA 같은 SM80 kernel 문제가 있으면 743B 모델 로딩 전에 확인할 수 있습니다.
+
 ## 현재 상태
 
 - 기준 vLLM: **v0.30.0**
-- 기준 CUDA image: **`vllm/vllm-openai:v0.30.0-cu129`**
+- 기준 CUDA image: **`vllm/vllm-openai:v0.30.0`**
 - 대상 GPU: **A100/A800 (SM80)**
 - 권장 16-GPU 토폴로지: **2 nodes × 8 A100, TP8 × PP2**
 - main KV cache: **BF16**
@@ -31,7 +94,7 @@ GitHub Actions에서도 동일한 검사가 통과했습니다.
 
 ### 아직 확인하지 않은 것
 
-**A100 16장 실제 하드웨어에서 full GLM-5.3을 아직 끝까지 기동한 상태는 아닙니다.**
+**vLLM 0.30.0 원본에 전체 패치를 적용한 뒤 Python compile, SM80 invariant 검사, CUDA13 launcher 검사는 통과했습니다. 실제 A100에서 새 SIF의 GPU smoke test와 full GLM-5.3 serving은 아직 확인 전입니다.**
 
 따라서 현재 상태는:
 
@@ -352,7 +415,7 @@ model weights   = FP8
 # 빌드
 
 ```bash
-git checkout glm53-full-sm80
+git checkout glm53-full-sm80-cu130-v030
 
 bash ./build_glm53_full_sm80_sif.sh \
   /path/to/glm53-full-sm80-vllm030-cu130.sif
@@ -470,7 +533,7 @@ vendor/glm53-full-sm80/
   외부 PR을 빌드 시 다시 다운로드하지 않도록 고정한 Triton source
 
 Singularity.glm53-full-sm80.def
-  vllm-openai:v0.30.0-cu129 기반 SIF
+  vllm-openai:v0.30.0 기반 SIF
 
 build_glm53_full_sm80_sif.sh
   SIF 빌드
