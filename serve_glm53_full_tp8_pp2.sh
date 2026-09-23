@@ -5,7 +5,7 @@
 #
 # Usage on BOTH nodes:
 #   export MODEL_HOST_PATH=/models/GLM-5.3
-#   export SIF_PATH=/path/glm53-full-sm80-vllm029-cu129.sif
+#   export SIF_PATH=/path/glm53-full-sm80-vllm030-cu130.sif
 #   export MASTER_ADDR=10.0.0.10       # routable IP of node 0
 #   export NODE_RANK=0                 # node 0; use 1 on node 1
 #   bash ./serve_glm53_full_tp8_pp2.sh start
@@ -18,7 +18,7 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SO
 
 # ----------------------------- required ---------------------------------
 MODEL_HOST_PATH="${MODEL_HOST_PATH:-}"
-SIF_PATH="${SIF_PATH:-$(pwd)/glm53-full-sm80-vllm029-cu129.sif}"
+SIF_PATH="${SIF_PATH:-$(pwd)/glm53-full-sm80-vllm030-cu130.sif}"
 MASTER_ADDR="${MASTER_ADDR:-}"
 NODE_RANK="${NODE_RANK:-}"
 
@@ -212,9 +212,9 @@ run_server() {
     --env NCCL_NVLS_ENABLE=0
     --env TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
-    --env VLLM_ENABLE_CUDA_COMPATIBILITY=1
-    --env VLLM_CUDA_COMPATIBILITY_PATH=/usr/local/cuda-12.9/compat
-    --env LD_LIBRARY_PATH=/usr/local/cuda-12.9/compat:/usr/local/cuda/lib64
+    --env 
+    --env 
+    --env 
   )
   [[ -n "${NCCL_IB_HCA}" ]] && ENV_ARGS+=(--env NCCL_IB_HCA="${NCCL_IB_HCA}")
   [[ -n "${NCCL_IB_DISABLE}" ]] && ENV_ARGS+=(--env NCCL_IB_DISABLE="${NCCL_IB_DISABLE}")
