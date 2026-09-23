@@ -170,4 +170,6 @@ class TritonMLASparseBackend(AttentionBackend):
 
     @classmethod
     def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
-        return True
+        # This branch is specifically validated for A100/A800 (SM80).
+        # Do not steal backend selection from native sparse kernels on SM89+.
+        return capability == DeviceCapability(8, 0)
