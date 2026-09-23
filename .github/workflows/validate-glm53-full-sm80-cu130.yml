@@ -94,6 +94,8 @@ jobs:
           print("SM80_FP8_ACTIVE_PATHS=PASS")
           PY
 
+          grep -q 'def record_logical_topk_ready' \
+            vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q '_sm80_pp_topk_relay_buf' "$MODEL"
           grep -q 'SM80_DSA_SELF_PAD' "$BT"
           grep -q 'self.reorder_batch_threshold = self.decode_threshold' "$IDX"
