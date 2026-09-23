@@ -68,6 +68,9 @@ Notable correctness fixes include:
 - padded KPoolTail slots initialized to `-1`
 - KPoolTail exclusion from generic slot mapping
 - MTP seq-len and position propagation fixes
+- exact 2-D per-token paged-MQA context lengths for KPool MTP1 (no last-column collapse)
+
+> Source/static validation now also covers native MTP1 (`next_n=2`): the SM80 paged-MQA fallback accepts exact `[B, next_n]` context lengths instead of collapsing them to `seq_lens[:, -1]`. This removes a KPool-specific causal-length error when compressed lengths repeat (for example `[2, 2]`). A100 MTP1 serving still needs a separate runtime A/B check.
 
 ## Build
 
