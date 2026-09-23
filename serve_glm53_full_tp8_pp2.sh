@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Production-oriented 2-node launcher for full zai-org/GLM-5.3 on
-# 2 x (8 x A100/A800 SM80).  vLLM topology: TP=8 inside each node, PP=2
-# across nodes.
+# Full zai-org/GLM-5.3 on 2 x (8 x A100/A800 SM80), vLLM 0.30.0.
 #
-# Usage on BOTH nodes:
-#   export MODEL_HOST_PATH=/models/GLM-5.3
-#   export SIF_PATH=/path/glm53-full-sm80-vllm030-cu130.sif
-#   export MASTER_ADDR=10.0.0.10       # routable IP of node 0
-#   export NODE_RANK=0                 # node 0; use 1 on node 1
-#   bash ./serve_glm53_full_tp8_pp2.sh start
+# This launcher intentionally stays close to the official GLM-5.3 recipe.
+# Only the options required by 2-node placement or by the SM80 port are added.
+#
+# Required on both nodes:
+#   MODEL_HOST_PATH=/models/GLM-5.3
+#   SIF_PATH=/path/glm53-full-sm80-vllm030-cu130.sif
+#   MASTER_ADDR=<routable node0 IPv4 or hostname>
+#   NODE_RANK=0    # 1 on node1
+#
+# Optional on multi-NIC hosts:
+#   NET_IFACE=eno1
 #
 # Actions: start | stop | restart | status | logs | health | run
 set -euo pipefail
@@ -16,50 +19,26 @@ set -euo pipefail
 ACTION="${1:-start}"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-# ----------------------------- required ---------------------------------
 MODEL_HOST_PATH="${MODEL_HOST_PATH:-}"
 SIF_PATH="${SIF_PATH:-$(pwd)/glm53-full-sm80-vllm030-cu130.sif}"
 MASTER_ADDR="${MASTER_ADDR:-}"
 NODE_RANK="${NODE_RANK:-}"
 
-# ------------------------------ serving ---------------------------------
 PORT="${PORT:-8200}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.3}"
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 
-# Conservative first production profile. Raise only after the A100 runtime
-# baseline is clean. With BF16 MLA KV, long-context concurrency is expensive.
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
+# A100 bring-up cap. GLM-5.3 supports 1M, but this port uses BF16 main MLA KV
+# instead of the official FP8 KV path. Raise this after the 128K baseline passes.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-2}"
-MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-8192}"
-BLOCK_SIZE="${BLOCK_SIZE:-64}"
 
-# Current SM80 port supports BF16 main MLA KV. The DSA indexer side-cache
-# remains FP8. Do not change this to fp8/fp8_e4m3 until an SM80 reader is added.
-KV_CACHE_DTYPE="bfloat16"
+# Off by default: the official recipe uses graphs. Set to 1 only while debugging.
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 
-# Correctness-safe defaults for the first real A100 deployment.
-PREFIX_CACHING="${PREFIX_CACHING:-0}"   # 1 after baseline validation
-ENFORCE_EAGER="${ENFORCE_EAGER:-1}"     # first bring-up; set 0 after correctness passes
-NUMA_BIND="${NUMA_BIND:-0}"
-DISABLE_LOG_REQUESTS="${DISABLE_LOG_REQUESTS:-1}"
-
-# Keep MTP disabled for the first SM80 correctness bring-up. vLLM 0.30 has
-# PP/MTP support, but this A100 port has not yet validated that combination.
-SPEC_TOKENS="${SPEC_TOKENS:-0}"
-
-# Optional API authentication.
 API_KEY="${API_KEY:-}"
-
-# Network interface. Set NET_IFACE explicitly on multi-NIC/IB hosts.
 NET_IFACE="${NET_IFACE:-}"
-NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
-NCCL_IB_HCA="${NCCL_IB_HCA:-}"
-NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-}"
 
-CACHE_DIR="${CACHE_DIR:-/tmp/vllm_glm53_full_sm80}"
 RUN_DIR="${RUN_DIR:-/tmp/glm53-full-sm80}"
 LOG_DIR="${LOG_DIR:-$(pwd)/logs}"
 PID_FILE="${PID_FILE:-${RUN_DIR}/glm53.rank${NODE_RANK:-x}.pid}"
@@ -72,92 +51,46 @@ resolve_master_ipv4() {
     echo "${MASTER_ADDR}"
     return
   fi
-
   local ipaddr
   ipaddr="$(getent ahostsv4 "${MASTER_ADDR}" 2>/dev/null |
     awk '$2 == "STREAM" {print $1; exit}')"
-  [[ -n "${ipaddr}" ]] ||
-    die "cannot resolve MASTER_ADDR=${MASTER_ADDR} to IPv4"
+  [[ -n "${ipaddr}" ]] || die "cannot resolve MASTER_ADDR=${MASTER_ADDR} to IPv4"
   echo "${ipaddr}"
 }
 
-detect_iface() {
-  if [[ -n "${NET_IFACE}" ]]; then
-    ip link show dev "${NET_IFACE}" >/dev/null 2>&1 ||
-      die "NET_IFACE does not exist: ${NET_IFACE}"
-    echo "${NET_IFACE}"
+local_host_ip() {
+  local master_ip ipaddr
+  master_ip="$(resolve_master_ipv4)"
+
+  # Rank 0 normally advertises MASTER_ADDR itself.
+  if [[ "${NODE_RANK}" == "0" ]] &&
+     ip -o -4 addr show scope global 2>/dev/null |
+       awk -v target="${master_ip}" '{split($4,a,"/"); if (a[1]==target) found=1} END {exit !found}'; then
+    echo "${master_ip}"
     return
   fi
 
-  local master_ip iface
-
-  master_ip="$(resolve_master_ipv4)"
-
-  # On rank 0 MASTER_ADDR is normally this host's own address.  In that case
-  # 'ip route get <MASTER_ADDR>' commonly returns 'dev lo', which is not the
-  # interface NCCL/Gloo should use.  First match the address to a real
-  # scope-global interface.
-  iface="$(ip -o -4 addr show scope global 2>/dev/null |
-    awk -v target="${master_ip}" '{
-      split($4, a, "/")
-      if (a[1] == target && $2 != "lo") {print $2; exit}
-    }')"
-
-  # On the other node, select the interface used to reach rank 0.
-  if [[ -z "${iface}" ]]; then
-    iface="$(ip -o route get "${master_ip}" 2>/dev/null |
-      awk '{
-        for (i=1; i<=NF; i++) {
-          if ($i == "dev" && $(i+1) != "lo") {print $(i+1); exit}
-        }
-      }')"
-  fi
-
-  # Last-resort fallback for ordinary single-default-route hosts.
-  if [[ -z "${iface}" ]]; then
-    iface="$(ip -o route show default 2>/dev/null |
-      awk '{
-        for (i=1; i<=NF; i++) {
-          if ($i == "dev" && $(i+1) != "lo") {print $(i+1); exit}
-        }
-      }')"
-  fi
-
-  if [[ -z "${iface}" ]]; then
-    echo "Available global IPv4 interfaces:" >&2
-    ip -o -4 addr show scope global >&2 || true
-    die "cannot auto-detect network interface; set NET_IFACE explicitly"
-  fi
-
-  echo "${iface}"
+  # Other ranks use the source address selected by the route to node0.
+  ipaddr="$(ip -o route get "${master_ip}" 2>/dev/null |
+    awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')"
+  [[ -n "${ipaddr}" && "${ipaddr}" != "127.0.0.1" ]] ||
+    die "cannot determine this node's routable IP for MASTER_ADDR=${MASTER_ADDR}"
+  echo "${ipaddr}"
 }
 
-local_ip_for_iface() {
-  local iface="$1"
-  local master_ip ipaddr
-
-  master_ip="$(resolve_master_ipv4)"
-
-  # Prefer the source address selected by the kernel route.  This also gives
-  # rank 0 its MASTER_ADDR even when the route itself is represented via lo.
-  ipaddr="$(ip -o route get "${master_ip}" 2>/dev/null |
-    awk '{
-      for (i=1; i<=NF; i++) {
-        if ($i == "src") {print $(i+1); exit}
-      }
-    }')"
-
-  if [[ -z "${ipaddr}" || "${ipaddr}" == "127.0.0.1" ]]; then
-    ipaddr="$(ip -o -4 addr show dev "${iface}" scope global 2>/dev/null |
-      awk '{split($4,a,"/"); print a[1]; exit}')"
+runtime_bin() {
+  if command -v apptainer >/dev/null 2>&1; then
+    echo apptainer
+  elif command -v singularity >/dev/null 2>&1; then
+    echo singularity
+  else
+    die "apptainer/singularity not found"
   fi
-
-  echo "${ipaddr}"
 }
 
 preflight() {
   [[ -n "${MODEL_HOST_PATH}" ]] || die "set MODEL_HOST_PATH"
-  [[ -n "${MASTER_ADDR}" ]] || die "set MASTER_ADDR to node0 routable IP"
+  [[ -n "${MASTER_ADDR}" ]] || die "set MASTER_ADDR to node0 routable address"
   [[ "${NODE_RANK}" == "0" || "${NODE_RANK}" == "1" ]] ||
     die "NODE_RANK must be 0 or 1"
   [[ -d "${MODEL_HOST_PATH}" ]] || die "model path not found: ${MODEL_HOST_PATH}"
@@ -171,80 +104,53 @@ preflight() {
   ngpu="$(nvidia-smi -L | wc -l)"
   (( ngpu >= 8 )) || die "need at least 8 visible GPUs on this node; found ${ngpu}"
 
-  if (( SPEC_TOKENS > 0 )); then
-    die "SPEC_TOKENS>0 is not enabled for TP8xPP2 yet; use SPEC_TOKENS=0"
+  if [[ -n "${NET_IFACE}" ]]; then
+    ip link show dev "${NET_IFACE}" >/dev/null 2>&1 ||
+      die "NET_IFACE does not exist: ${NET_IFACE}"
   fi
-
-  local iface ipaddr
-  iface="$(detect_iface)"
-  ipaddr="$(local_ip_for_iface "${iface}")"
-  [[ -n "${ipaddr}" ]] || die "no IPv4 address found on interface ${iface}"
 
   echo "node_rank=${NODE_RANK}"
   echo "master=${MASTER_ADDR}:${MASTER_PORT}"
-  echo "net_iface=${iface}"
-  echo "local_ip=${ipaddr}"
+  echo "local_ip=$(local_host_ip)"
+  echo "net_iface=${NET_IFACE:-auto}"
   echo "gpus=${GPUS}"
   echo "model=${MODEL_HOST_PATH}"
   echo "sif=${SIF_PATH}"
 }
 
-runtime_bin() {
-  if command -v apptainer >/dev/null 2>&1; then
-    echo apptainer
-  elif command -v singularity >/dev/null 2>&1; then
-    echo singularity
-  else
-    die "apptainer/singularity not found"
-  fi
-}
-
 build_args() {
   VLLM_ARGS=(
     vllm serve /models/GLM-5.3
-    --served-model-name "${SERVED_MODEL_NAME}"
-    --trust-remote-code
 
+    # Official GLM-5.3 recipe.
+    --served-model-name "${SERVED_MODEL_NAME}"
+    --tool-call-parser glm47
+    --reasoning-parser glm47
+    --enable-auto-tool-choice
+
+    # 2 nodes x 8 A100. vLLM auto-selects the MP executor when nnodes > 1.
     --tensor-parallel-size 8
     --pipeline-parallel-size 2
-    --distributed-executor-backend mp
     --nnodes 2
     --node-rank "${NODE_RANK}"
     --master-addr "${MASTER_ADDR}"
     --master-port "${MASTER_PORT}"
-    --distributed-timeout-seconds 3600
 
-    --dtype bfloat16
-    --kv-cache-dtype "${KV_CACHE_DTYPE}"
-    --block-size "${BLOCK_SIZE}"
-    --attention-config '{"backend":"TRITON_MLA_SPARSE","indexer_kv_dtype":"fp8"}'
-
+    # SM80 port differences from the official Hopper/B300 recipe.
+    --kv-cache-dtype bfloat16
+    --attention-config '{"backend":"TRITON_MLA_SPARSE"}'
     --linear-backend marlin
     --moe-backend marlin
-    --enable-expert-parallel
 
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+    # Conservative A100 baseline; not an architectural requirement.
     --max-model-len "${MAX_MODEL_LEN}"
-    --max-num-seqs "${MAX_NUM_SEQS}"
-    --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
-
-    --tool-call-parser glm47
-    --reasoning-parser glm47
-    --enable-auto-tool-choice
   )
 
-  if [[ "${PREFIX_CACHING}" == "1" ]]; then
-    VLLM_ARGS+=(--enable-prefix-caching)
-  else
-    VLLM_ARGS+=(--no-enable-prefix-caching)
-  fi
   [[ "${ENFORCE_EAGER}" == "1" ]] && VLLM_ARGS+=(--enforce-eager)
-  [[ "${NUMA_BIND}" == "1" ]] && VLLM_ARGS+=(--numa-bind)
-  [[ "${DISABLE_LOG_REQUESTS}" == "1" ]] && VLLM_ARGS+=(--disable-log-requests)
   [[ -n "${API_KEY}" ]] && VLLM_ARGS+=(--api-key "${API_KEY}")
 
   if [[ "${NODE_RANK}" == "0" ]]; then
-    VLLM_ARGS+=(--host 0.0.0.0 --port "${PORT}")
+    VLLM_ARGS+=(--port "${PORT}")
   else
     VLLM_ARGS+=(--headless)
   fi
@@ -252,39 +158,41 @@ build_args() {
 
 run_server() {
   preflight
-  mkdir -p "${CACHE_DIR}/hf" "${CACHE_DIR}/triton" "${CACHE_DIR}/vllm"            "${RUN_DIR}" "${LOG_DIR}"
+  mkdir -p "${RUN_DIR}" "${LOG_DIR}"
 
-  local iface local_ip rt
-  iface="$(detect_iface)"
-  local_ip="$(local_ip_for_iface "${iface}")"
+  local rt host_ip
   rt="$(runtime_bin)"
+  host_ip="$(local_host_ip)"
   build_args
 
   ENV_ARGS=(
     --env CUDA_VISIBLE_DEVICES="${GPUS}"
-    --env HF_HUB_OFFLINE=1
-    --env TRANSFORMERS_OFFLINE=1
-    --env HF_HOME=/glm53_cache/hf
-    --env XDG_CACHE_HOME=/glm53_cache
-    --env TRITON_CACHE_DIR=/glm53_cache/triton
-    --env VLLM_CACHE_ROOT=/glm53_cache/vllm
-    --env VLLM_HOST_IP="${local_ip}"
-    --env VLLM_WORKER_MULTIPROC_METHOD=spawn
-    --env VLLM_ENGINE_READY_TIMEOUT_S=3600
-    --env PYTHONUNBUFFERED=1
-    --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-    --env NCCL_SOCKET_IFNAME="${iface}"
-    --env GLOO_SOCKET_IFNAME="${iface}"
-    --env NCCL_DEBUG="${NCCL_DEBUG}"
-    --env NCCL_NVLS_ENABLE=0
-    --env TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-
+    # vLLM explicitly recommends a routable per-node address for multi-node.
+    --env VLLM_HOST_IP="${host_ip}"
   )
-  [[ -n "${NCCL_IB_HCA}" ]] && ENV_ARGS+=(--env NCCL_IB_HCA="${NCCL_IB_HCA}")
-  [[ -n "${NCCL_IB_DISABLE}" ]] && ENV_ARGS+=(--env NCCL_IB_DISABLE="${NCCL_IB_DISABLE}")
 
-  exec "${rt}" exec --nv     --bind "${MODEL_HOST_PATH}:/models/GLM-5.3:ro"     --bind "${CACHE_DIR}:/glm53_cache"     "${ENV_ARGS[@]}"     "${SIF_PATH}"     "${VLLM_ARGS[@]}"
+  # Only pin NCCL/Gloo to an interface when the user asks for it. vLLM's
+  # troubleshooting docs treat these as multi-NIC overrides, not defaults.
+  if [[ -n "${NET_IFACE}" ]]; then
+    ENV_ARGS+=(
+      --env NCCL_SOCKET_IFNAME="${NET_IFACE}"
+      --env GLOO_SOCKET_IFNAME="${NET_IFACE}"
+    )
+  fi
+
+  # Optional NCCL tuning is inherited only when explicitly supplied.
+  [[ -n "${NCCL_IB_HCA:-}" ]] &&
+    ENV_ARGS+=(--env NCCL_IB_HCA="${NCCL_IB_HCA}")
+  [[ -n "${NCCL_IB_DISABLE:-}" ]] &&
+    ENV_ARGS+=(--env NCCL_IB_DISABLE="${NCCL_IB_DISABLE}")
+  [[ -n "${NCCL_DEBUG:-}" ]] &&
+    ENV_ARGS+=(--env NCCL_DEBUG="${NCCL_DEBUG}")
+
+  exec "${rt}" exec --nv \
+    --bind "${MODEL_HOST_PATH}:/models/GLM-5.3:ro" \
+    "${ENV_ARGS[@]}" \
+    "${SIF_PATH}" \
+    "${VLLM_ARGS[@]}"
 }
 
 is_running() {
@@ -301,44 +209,32 @@ start_server() {
     echo "already running: pid=$(cat "${PID_FILE}")"
     exit 0
   fi
-  rm -f "${PID_FILE}"
 
+  rm -f "${PID_FILE}"
   nohup setsid bash "${SCRIPT_PATH}" run >"${LOG_FILE}" 2>&1 < /dev/null &
   local pid=$!
   echo "${pid}" > "${PID_FILE}"
 
   echo "started rank ${NODE_RANK}: pid=${pid}"
   echo "log: ${LOG_FILE}"
-  if [[ "${NODE_RANK}" == "0" ]]; then
-    echo "health: http://${MASTER_ADDR}:${PORT}/health"
-  else
-    echo "node1 is headless; check status/logs locally"
-  fi
 }
 
 stop_server() {
   if ! [[ -f "${PID_FILE}" ]]; then
     echo "not running (no pid file)"
-    exit 0
-  fi
-  local pid
-  pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
-  if [[ -z "${pid}" ]]; then
-    rm -f "${PID_FILE}"
-    exit 0
+    return
   fi
 
-  if kill -0 "${pid}" 2>/dev/null; then
-    # The detached launcher is a session/process-group leader. Kill the whole
-    # group so vLLM local workers and the container runtime exit together.
+  local pid
+  pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
     kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
     for _ in $(seq 1 30); do
       kill -0 "${pid}" 2>/dev/null || break
       sleep 1
     done
-    if kill -0 "${pid}" 2>/dev/null; then
-      kill -KILL -- "-${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true
-    fi
+    kill -0 "${pid}" 2>/dev/null &&
+      { kill -KILL -- "-${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true; }
   fi
   rm -f "${PID_FILE}"
   echo "stopped rank ${NODE_RANK}"
@@ -370,8 +266,5 @@ case "${ACTION}" in
   logs)    touch "${LOG_FILE}"; tail -n 200 -f "${LOG_FILE}" ;;
   health)  health_server ;;
   run)     run_server ;;
-  *)
-    echo "usage: $0 {start|stop|restart|status|logs|health|run}" >&2
-    exit 2
-    ;;
+  *) echo "usage: $0 {start|stop|restart|status|logs|health|run}" >&2; exit 2 ;;
 esac
