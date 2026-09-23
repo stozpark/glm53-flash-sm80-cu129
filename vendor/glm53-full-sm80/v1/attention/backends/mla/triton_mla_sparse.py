@@ -50,6 +50,13 @@ class TritonMLASparseImpl(XPUMLASparseImpl):
             self._sm_count = num_compute_units(self.topk_indices_buffer.device.index)
         self._warmup_autotune(kwargs["indexer"])
 
+    def record_logical_topk_ready(self) -> None:
+        # This backend shares logical top-k indices through
+        # SharedTopkIndicesBuffer but does not participate in the sparse-MLA
+        # index-group machinery. This mirrors ROCMAiterMLASparseImpl in
+        # upstream vLLM.
+        pass
+
     def _warmup_autotune(self, indexer) -> None:
         """Prime `@triton.autotune` caches at init so the first request
         doesn't pay the inline config-sweep cost."""
