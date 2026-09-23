@@ -25,7 +25,6 @@ PY
         "${VLLM_ROOT}/models/deepseek_v32/nvidia/model.py" \
         "${VLLM_ROOT}/models/deepseek_v32/attention.py" \
         "${VLLM_ROOT}/models/deepseek_v32/common/kernels.py" \
-        "${VLLM_ROOT}/v1/worker/block_table.py" \
         "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py" \
         "${VLLM_ROOT}/v1/attention/ops/mqa_logits_triton.py" \
         "${VLLM_ROOT}/v1/attention/ops/triton_mla_sparse_kernel.py"
