@@ -33,8 +33,14 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # instead of the official FP8 KV path. Raise this after the 128K baseline passes.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 
-# Off by default: the official recipe uses graphs. Set to 1 only while debugging.
-ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+# Correctness-first bring-up defaults. Relax these only after short/long-context
+# output parity has passed on the full 16-GPU deployment.
+ENFORCE_EAGER="${ENFORCE_EAGER:-1}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-4096}"
+BLOCK_SIZE="${BLOCK_SIZE:-64}"
+ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-0}"
+PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -116,6 +122,12 @@ preflight() {
   echo "gpus=${GPUS}"
   echo "model=${MODEL_HOST_PATH}"
   echo "sif=${SIF_PATH}"
+  echo "pp_layer_partition=${PP_LAYER_PARTITION}"
+  echo "block_size=${BLOCK_SIZE}"
+  echo "max_num_seqs=${MAX_NUM_SEQS}"
+  echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS}"
+  echo "prefix_caching=${ENABLE_PREFIX_CACHING}"
+  echo "enforce_eager=${ENFORCE_EAGER}"
 }
 
 build_args() {
@@ -142,10 +154,16 @@ build_args() {
     --linear-backend marlin
     --moe-backend marlin
 
-    # Conservative A100 baseline; not an architectural requirement.
+    # Conservative A100 correctness baseline.
     --max-model-len "${MAX_MODEL_LEN}"
+    --max-num-seqs "${MAX_NUM_SEQS}"
+    --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
+    --block-size "${BLOCK_SIZE}"
   )
 
+  [[ "${ENABLE_PREFIX_CACHING}" == "1" ]] \
+    && VLLM_ARGS+=(--enable-prefix-caching) \
+    || VLLM_ARGS+=(--no-enable-prefix-caching)
   [[ "${ENFORCE_EAGER}" == "1" ]] && VLLM_ARGS+=(--enforce-eager)
   [[ -n "${API_KEY}" ]] && VLLM_ARGS+=(--api-key "${API_KEY}")
 
@@ -169,6 +187,10 @@ run_server() {
     --env CUDA_VISIBLE_DEVICES="${GPUS}"
     # vLLM explicitly recommends a routable per-node address for multi-node.
     --env VLLM_HOST_IP="${host_ip}"
+    # GLM-5.3 shares one DSA Top-K across four layers.  The default 39/39
+    # split starts PP1 on a shared-index layer (39); 42/36 starts it on the
+    # next full-indexer layer and removes cross-stage Top-K state.
+    --env VLLM_PP_LAYER_PARTITION="${PP_LAYER_PARTITION}"
   )
 
   # Only pin NCCL/Gloo to an interface when the user asks for it. vLLM's
