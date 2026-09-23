@@ -42,7 +42,7 @@ KV_CACHE_DTYPE="bfloat16"
 
 # Correctness-safe defaults for the first real A100 deployment.
 PREFIX_CACHING="${PREFIX_CACHING:-0}"   # 1 after baseline validation
-ENFORCE_EAGER="${ENFORCE_EAGER:-0}"     # 1 only for debugging
+ENFORCE_EAGER="${ENFORCE_EAGER:-1}"     # first bring-up; set 0 after correctness passes
 NUMA_BIND="${NUMA_BIND:-0}"
 DISABLE_LOG_REQUESTS="${DISABLE_LOG_REQUESTS:-1}"
 
