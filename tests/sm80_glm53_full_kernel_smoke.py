@@ -250,9 +250,18 @@ def main() -> None:
     )
     torch.cuda.synchronize()
     assert logits.shape == (n, block_size)
-    qf = iq_fp8.float()
-    kf = k_values.float() * k_scales[:, None]
-    dense = torch.einsum("mhd,nd->mhn", qf, kf)
+    # Match the Triton/DeepGEMM indexer semantics exactly:
+    #   dot(FP8->BF16 Q, FP8->BF16 K) -> apply K scale in FP32
+    #   -> ReLU -> per-head weight -> sum over heads.
+    q_bf16_ref = iq_fp8.to(torch.bfloat16)
+    k_bf16_ref = k_values.to(torch.bfloat16)
+    dense = torch.einsum(
+        "mhd,nd->mhn",
+        q_bf16_ref.float(),
+        k_bf16_ref.float(),
+    )
+    dense = dense * k_scales[None, None, :]
+    dense = torch.relu(dense)
     dense = (dense * iw_out[:, :, None]).sum(dim=1)
     for row in range(n):
         assert torch.isfinite(logits[row, : row + 1]).all()
