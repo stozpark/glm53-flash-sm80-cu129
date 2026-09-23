@@ -1,0 +1,116 @@
+name: Validate GLM-5.3 full SM80 CUDA13
+
+on:
+  push:
+    branches: [glm53-full-sm80-cu130-v030]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout port branch
+        uses: actions/checkout@v4
+        with:
+          ref: glm53-full-sm80-cu130-v030
+          path: port
+
+      - name: Checkout exact vLLM 0.30.0
+        uses: actions/checkout@v4
+        with:
+          repository: vllm-project/vllm
+          ref: v0.30.0
+          path: vllm030
+
+      - name: Apply complete SM80 patch chain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 port/patch_glm53_full_sm80.py \
+            --vllm-root "$PWD/vllm030/vllm" \
+            --vendor "$PWD/port/vendor/glm53-full-sm80"
+
+      - name: Compile every patched Python module
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m py_compile \
+            vllm030/vllm/v1/attention/backends/registry.py \
+            vllm030/vllm/platforms/cuda.py \
+            vllm030/vllm/v1/attention/backends/mla/indexer.py \
+            vllm030/vllm/model_executor/layers/sparse_attn_indexer.py \
+            vllm030/vllm/models/deepseek_v32/common/kernels.py \
+            vllm030/vllm/models/deepseek_v32/nvidia/model.py \
+            vllm030/vllm/v1/worker/block_table.py \
+            vllm030/vllm/v1/attention/ops/fp8_sm80.py \
+            vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
+            vllm030/vllm/v1/attention/ops/mqa_logits_triton.py \
+            vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
+
+      - name: Verify SM80 invariants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          REG=vllm030/vllm/v1/attention/backends/registry.py
+          CUDA=vllm030/vllm/platforms/cuda.py
+          IDX=vllm030/vllm/v1/attention/backends/mla/indexer.py
+          SIDX=vllm030/vllm/model_executor/layers/sparse_attn_indexer.py
+          KERN=vllm030/vllm/models/deepseek_v32/common/kernels.py
+          MODEL=vllm030/vllm/models/deepseek_v32/nvidia/model.py
+          BT=vllm030/vllm/v1/worker/block_table.py
+          MLA=vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
+          MQA=vllm030/vllm/v1/attention/ops/mqa_logits_triton.py
+
+          grep -q 'TRITON_MLA_SPARSE' "$REG"
+          grep -q 'AttentionBackendEnum.TRITON_MLA_SPARSE' "$CUDA"
+          grep -q 'is_deep_gemm_supported' "$IDX"
+          ! grep -q 'has_deep_gemm()' "$IDX"
+
+          grep -q '_sm80_fp8_fp4_mqa_logits' "$SIDX"
+          grep -q 'using SM80 Triton DSA indexer fallback' "$SIDX"
+          ! grep -q 'Sparse Attention Indexer CUDA op requires DeepGEMM' "$SIDX"
+
+          grep -q 'SM80_SOFTWARE_E4M3FN' "$KERN"
+          grep -q '_encode_e4m3fn_u8' "$KERN"
+          grep -q 'index_q_fp8_storage' "$KERN"
+
+          # The unconditional index-Q quantizer and fused-Q body must contain
+          # no native Ampere-incompatible conversion. Other constexpr-dead
+          # FP8 main-KV/NVFP4 branches may remain because baseline KV is BF16.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("vllm030/vllm/models/deepseek_v32/common/kernels.py")
+          s=p.read_text()
+          a=s.index("def _fp8_ue8m0_quantize")
+          b=s.index("def _fp8_quant_and_cache_write", a)
+          assert "tl.float8e4nv" not in s[a:b], "native FP8 remains in index quantizer"
+          a=s.index("def _fused_q_kernel")
+          b=s.index("def fused_q(", a)
+          assert ".to(tl.float8e4nv)" not in s[a:b], "native FP8 remains in fused_q"
+          print("SM80_FP8_ACTIVE_PATHS=PASS")
+          PY
+
+          grep -q '_sm80_pp_topk_relay_buf' "$MODEL"
+          grep -q 'SM80_DSA_SELF_PAD' "$BT"
+          grep -q 'self.reorder_batch_threshold = self.decode_threshold' "$IDX"
+
+          # Long-context pointer arithmetic guards.
+          test "$(grep -o 'to(tl.int64)' "$MLA" | wc -l)" -ge 3
+          grep -q 'block_idx.*tl.int64\|).to(tl.int64)' "$MQA"
+
+          echo GLM53_FULL_SM80_V030_STATIC=PASS
+
+      - name: Verify CUDA13 image definition and launchers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q '^From: vllm/vllm-openai:v0.30.0$' port/Singularity.glm53-full-sm80.def
+          ! grep -R 'cuda-12.9/compat\|vllm029\|cu129' \
+            port/Singularity.glm53-full-sm80.def \
+            port/serve_glm53_full_tp8_pp2.sh \
+            port/serve_glm53_full_tp16.sh \
+            port/build_glm53_full_sm80_sif.sh
+          echo CUDA13_PROFILE=PASS
