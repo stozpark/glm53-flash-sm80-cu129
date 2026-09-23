@@ -59,6 +59,7 @@ def main() -> None:
 
     # Production launcher invariants.
     for needle in (
+        "--distributed-executor-backend mp",
         "--tensor-parallel-size 8",
         "--pipeline-parallel-size 2",
         'PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"',
