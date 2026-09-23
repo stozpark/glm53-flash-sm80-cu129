@@ -161,7 +161,7 @@ def main() -> None:
         mla_kv_cache_dtype="bfloat16",
         mla_k_scale=None,
         has_indexer=True,
-        index_rope_interleave=False,
+        index_rope_interleave=True,
     )
     torch.cuda.synchronize()
     assert torch.isfinite(q_norm).all()
@@ -209,7 +209,7 @@ def main() -> None:
         INDEX_HEAD_DIM**-0.5,
         INDEX_HEADS**-0.5,
         has_indexer=True,
-        index_rope_interleave=False,
+        index_rope_interleave=True,
         quantize_mqa=False,
     )
     torch.cuda.synchronize()
