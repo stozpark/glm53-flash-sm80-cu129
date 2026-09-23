@@ -26,10 +26,10 @@ from vllm.v1.attention.ops.triton_mla_sparse_kernel import (
     triton_mla_sparse_attention,
 )
 
-# V3.2 indexers don't expose `n_head`; GLM-5.1-NVFP4 sets index_n_heads=32.
-# Autotune key includes (num_heads, head_dim), so a wrong warmup shape forces
-# a re-tune on first real request.
-_INDEXER_NUM_HEADS = 64
+# Full GLM-5.x DSA uses index_n_heads=32, index_head_dim=128.
+# Autotune keys include these shapes, so keep the fallback aligned with the
+# real GLM-5.3 config when an indexer wrapper does not expose n_head.
+_INDEXER_NUM_HEADS = 32
 _INDEXER_HEAD_DIM = 128
 
 
