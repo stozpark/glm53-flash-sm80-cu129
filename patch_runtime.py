@@ -127,6 +127,118 @@ def patch_mla_indexer_metadata(text: str) -> str:
     return text
 
 
+def patch_mqa_paged_context_lens(text: str) -> str:
+    """Preserve exact per-token context lengths in the SM80 paged-MQA fallback.
+
+    DeepGEMM accepts request-final [B] lengths or per-token [B, next_n]
+    effective lengths. The old Triton fallback only accepted [B] and KPool
+    collapsed 2-D metadata to the last column. That is not equivalent when
+    compress_ratio > 1: native MTP1 can legitimately produce repeated
+    compressed lengths such as [2, 2].
+
+    Teach the Triton kernel to consume either layout directly. For 2-D input
+    each entry is already the exact effective context length for that query,
+    so its causal offset is context_len - 1. The original reconstruction is
+    retained for 1-D request-final lengths.
+    """
+    if "CONTEXT_LENS_2D: tl.constexpr" in text:
+        return text
+
+    text = replace_once(
+        text,
+        "    stride_l_t,\n"
+        "    stride_l_n,\n"
+        "    next_n: tl.constexpr,\n",
+        "    stride_l_t,\n"
+        "    stride_l_n,\n"
+        "    stride_cl_b,\n"
+        "    stride_cl_n,\n"
+        "    CONTEXT_LENS_2D: tl.constexpr,\n"
+        "    next_n: tl.constexpr,\n",
+        "paged MQA context-lens strides",
+    )
+
+    text = replace_once(
+        text,
+        "    context_len = tl.load(context_lens_ptr + batch_id)\n"
+        "    if block_rk * block_size >= context_len:\n"
+        "        return\n"
+        "\n"
+        "    q_offset = context_len - next_n + next_n_id\n",
+        "    if CONTEXT_LENS_2D:\n"
+        "        context_len = tl.load(\n"
+        "            context_lens_ptr\n"
+        "            + batch_id * stride_cl_b\n"
+        "            + next_n_id * stride_cl_n\n"
+        "        )\n"
+        "        q_offset = context_len - 1\n"
+        "    else:\n"
+        "        context_len = tl.load(context_lens_ptr + batch_id * stride_cl_b)\n"
+        "        q_offset = context_len - next_n + next_n_id\n"
+        "\n"
+        "    if block_rk * block_size >= context_len:\n"
+        "        return\n",
+        "paged MQA per-token context length",
+    )
+
+    text = replace_once(
+        text,
+        "        context_lens:  [B] int32\n",
+        "        context_lens:  [B] request-final lengths or [B, next_n]\n"
+        "                       per-token effective lengths, int32\n",
+        "paged MQA context-lens docs",
+    )
+
+    text = replace_once(
+        text,
+        "    assert one == 1\n"
+        "    assert d_plus_4 == head_dim + 4\n",
+        "    assert one == 1\n"
+        "    assert d_plus_4 == head_dim + 4\n"
+        "    if context_lens.ndim not in (1, 2):\n"
+        "        raise ValueError(\n"
+        "            f\"context_lens must be [B] or [B,next_n], got {tuple(context_lens.shape)}\"\n"
+        "        )\n"
+        "    if context_lens.shape[0] != B:\n"
+        "        raise ValueError(\n"
+        "            f\"context_lens batch {context_lens.shape[0]} != q batch {B}\"\n"
+        "        )\n"
+        "    if context_lens.ndim == 2 and context_lens.shape[1] != next_n:\n"
+        "        raise ValueError(\n"
+        "            f\"context_lens next_n {context_lens.shape[1]} != q next_n {next_n}\"\n"
+        "        )\n"
+        "    context_lens_c = context_lens.contiguous()\n"
+        "    stride_cl_b = context_lens_c.stride(0)\n"
+        "    stride_cl_n = context_lens_c.stride(1) if context_lens_c.ndim == 2 else 0\n",
+        "paged MQA context-lens validation",
+    )
+
+    text = replace_once(
+        text,
+        "        fp8_lut,\n"
+        "        context_lens,\n"
+        "        block_tables,\n",
+        "        fp8_lut,\n"
+        "        context_lens_c,\n"
+        "        block_tables,\n",
+        "paged MQA context-lens pointer",
+    )
+
+    text = replace_once(
+        text,
+        "        logits.stride(0),\n"
+        "        logits.stride(1),\n"
+        "        next_n=next_n,\n",
+        "        logits.stride(0),\n"
+        "        logits.stride(1),\n"
+        "        stride_cl_b,\n"
+        "        stride_cl_n,\n"
+        "        CONTEXT_LENS_2D=context_lens_c.ndim == 2,\n"
+        "        next_n=next_n,\n",
+        "paged MQA context-lens launch args",
+    )
+    return text
+
 def _indent_block(block: str, spaces: int = 4) -> str:
     pad = " " * spaces
     return "\n".join(pad + line if line else line for line in block.splitlines())
@@ -187,8 +299,10 @@ def patch_kpool_indexer(text: str) -> str:
     elif "logits = fp8_mqa_logits_triton(" not in text:
         die("kpool prefill DeepGEMM call not found")
 
-    # Decode: replace the one direct DeepGEMM paged call. Keep seq_lens 2-D for
-    # downstream top-k, but collapse to [B] for the Triton kernel (MTP fix).
+    # Decode: replace the one direct DeepGEMM paged call. Preserve seq_lens
+    # exactly: the patched Triton kernel accepts both request-final [B] and
+    # per-token [B, next_n] lengths. This is required for KPool MTP1, where
+    # compressed lengths can repeat (for example [2, 2]).
     decode_pat = re.compile(
         r"^(?P<indent>[ \t]*)logits = fp8_fp4_paged_mqa_logits\(\n"
         r"(?P<body>[\s\S]*?)\n(?P=indent)\)",
@@ -203,24 +317,20 @@ def patch_kpool_indexer(text: str) -> str:
             f"{indent}if use_deep_gemm:\n"
             f"{original_indented}\n"
             f"{indent}else:\n"
-            f"{indent}    triton_seq_lens = (\n"
-            f"{indent}        seq_lens[:, -1].contiguous()\n"
-            f"{indent}        if seq_lens.ndim == 2\n"
-            f"{indent}        else seq_lens\n"
-            f"{indent}    )\n"
+            f"{indent}    # Preserve exact per-token KPool lengths for native MTP1.\n"
             f"{indent}    active_max_model_len = int(attn_metadata_narrowed.max_seq_len)\n"
             f"{indent}    logits = fp8_paged_mqa_logits_triton(\n"
             f"{indent}        padded_q_quant_cast,\n"
             f"{indent}        kv_cache,\n"
             f"{indent}        padded_weights[:num_padded_tokens],\n"
-            f"{indent}        triton_seq_lens,\n"
+            f"{indent}        seq_lens,\n"
             f"{indent}        decode_metadata.block_table,\n"
             f"{indent}        max_model_len=active_max_model_len,\n"
             f"{indent}        clean_logits=False,\n"
             f"{indent}    )"
         )
         text = text[: m.start()] + fallback + text[m.end() :]
-    elif "triton_seq_lens" not in text:
+    elif "Preserve exact per-token KPool lengths for native MTP1." not in text:
         die("kpool decode DeepGEMM call not found")
 
     # If this day-0 file carries the generic hard error, downgrade it.
@@ -307,8 +417,8 @@ def main() -> None:
     write(p_backend, backend_src)
     shutil.copy2(vendor / "pr54031/triton_mla_sparse_kernel.py", p_kernel)
     print(f"[patched] {p_kernel}")
-    shutil.copy2(vendor / "pr47629/mqa_logits_triton.py", p_mqa)
-    print(f"[patched] {p_mqa}")
+    mqa_src = (vendor / "pr47629/mqa_logits_triton.py").read_text(encoding="utf-8")
+    write(p_mqa, patch_mqa_paged_context_lens(mqa_src))
 
     # GLM-5.3 KPool compressor: only component retained from the A800 project.
     shutil.copy2(vendor / "a800/kpool_compress.py", p_kpool_compress)

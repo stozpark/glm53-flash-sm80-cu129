@@ -19,6 +19,52 @@ kpool = '''from vllm.utils.deep_gemm import (\n    fp8_fp4_mqa_logits,\n    fp8_
 out = m.patch_kpool_indexer(kpool)
 assert 'fp8_mqa_logits_triton' in out
 assert 'fp8_paged_mqa_logits_triton' in out
-assert 'seq_lens[:, -1].contiguous()' in out
+assert 'seq_lens[:, -1].contiguous()' not in out
+assert 'Preserve exact per-token KPool lengths for native MTP1.' in out
 assert 'use_deep_gemm = is_deep_gemm_supported()' in out
+
+mqa = '''@triton.jit
+def _fp8_paged_mqa_logits_kernel(
+    context_lens_ptr,
+    stride_l_t,
+    stride_l_n,
+    next_n: tl.constexpr,
+):
+    batch_id = 0
+    next_n_id = 0
+    block_rk = 0
+    block_size = 64
+    context_len = tl.load(context_lens_ptr + batch_id)
+    if block_rk * block_size >= context_len:
+        return
+
+    q_offset = context_len - next_n + next_n_id
+
+def fp8_paged_mqa_logits_triton(q, kv_cache, weights, context_lens, block_tables):
+    \"\"\"
+        context_lens:  [B] int32
+    \"\"\"
+    B, next_n, num_heads, head_dim = q.shape
+    _, block_size, one, d_plus_4 = kv_cache.shape
+    assert one == 1
+    assert d_plus_4 == head_dim + 4
+    _fp8_paged_mqa_logits_kernel[(1,)](
+        q,
+        kv_cache,
+        weights,
+        fp8_lut,
+        context_lens,
+        block_tables,
+        logits,
+        logits.stride(0),
+        logits.stride(1),
+        next_n=next_n,
+    )
+'''
+out = m.patch_mqa_paged_context_lens(mqa)
+assert 'CONTEXT_LENS_2D: tl.constexpr' in out
+assert 'q_offset = context_len - 1' in out
+assert 'context_lens_c = context_lens.contiguous()' in out
+assert 'CONTEXT_LENS_2D=context_lens_c.ndim == 2' in out
+
 print('PATCH_RUNTIME_UNIT=PASS')
