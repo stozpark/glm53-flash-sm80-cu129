@@ -33,13 +33,14 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # instead of the official FP8 KV path. Raise this after the 128K baseline passes.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 
-# Correctness-first bring-up defaults. Relax these only after short/long-context
-# output parity has passed on the full 16-GPU deployment.
-ENFORCE_EAGER="${ENFORCE_EAGER:-1}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-1}"
-MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-4096}"
+# Production defaults. Keep CUDA graphs and prefix caching enabled from the
+# first deployment; vLLM's A100 scheduler defaults are retained unless the
+# operator explicitly overrides them.
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
 BLOCK_SIZE="${BLOCK_SIZE:-64}"
-ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-0}"
+ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 
 API_KEY="${API_KEY:-}"
@@ -124,8 +125,8 @@ preflight() {
   echo "sif=${SIF_PATH}"
   echo "pp_layer_partition=${PP_LAYER_PARTITION}"
   echo "block_size=${BLOCK_SIZE}"
-  echo "max_num_seqs=${MAX_NUM_SEQS}"
-  echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS}"
+  echo "max_num_seqs=${MAX_NUM_SEQS:-vllm-default}"
+  echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS:-vllm-default}"
   echo "prefix_caching=${ENABLE_PREFIX_CACHING}"
   echo "enforce_eager=${ENFORCE_EAGER}"
 }
@@ -154,12 +155,16 @@ build_args() {
     --linear-backend marlin
     --moe-backend marlin
 
-    # Conservative A100 correctness baseline.
+    # Production A100 baseline.  Let vLLM select its tuned A100 scheduler
+    # defaults (OpenAI server: 2048 batched tokens / 256 seqs in v0.30.0)
+    # unless explicit overrides are supplied.
     --max-model-len "${MAX_MODEL_LEN}"
-    --max-num-seqs "${MAX_NUM_SEQS}"
-    --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
     --block-size "${BLOCK_SIZE}"
   )
+
+  [[ -n "${MAX_NUM_SEQS}" ]] && VLLM_ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
+  [[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] \
+    && VLLM_ARGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
 
   [[ "${ENABLE_PREFIX_CACHING}" == "1" ]] \
     && VLLM_ARGS+=(--enable-prefix-caching) \
