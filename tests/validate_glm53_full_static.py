@@ -145,12 +145,21 @@ def main() -> None:
     must(reasoning_parsers, '"glm47"', "GLM reasoning parser")
 
     # Marlin must support A100 and GLM-5.3's 128x128 block-FP8 weights.
+    fp8_quant = (
+        vllm / "model_executor/layers/quantization/fp8.py"
+    ).read_text()
+    quant_utils = (
+        vllm / "model_executor/layers/quantization/utils/quant_utils.py"
+    ).read_text()
     marlin_linear = (
         vllm / "model_executor/kernels/linear/scaled_mm/marlin.py"
     ).read_text()
     marlin_moe = (
         vllm / "model_executor/layers/fused_moe/experts/marlin_moe.py"
     ).read_text()
+    must(fp8_quant, "GroupShape(*self.weight_block_size)", "FP8 block quant mapping")
+    must(quant_utils, "GroupShape(128, 128)", "128x128 FP8 quant key")
+    must(quant_utils, "kFp8Static128BlockSym", "128x128 FP8 quant key")
     must(marlin_linear, "FP8 Marlin requires compute capability 7.5 or higher", "linear")
     must(marlin_linear, "kFp8Static128BlockSym", "linear block-FP8")
     must(marlin_moe, "p.has_device_capability((7, 5))", "MoE A100 capability")
