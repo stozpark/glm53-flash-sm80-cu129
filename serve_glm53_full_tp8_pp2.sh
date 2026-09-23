@@ -42,6 +42,7 @@ MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
 BLOCK_SIZE="${BLOCK_SIZE:-64}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
+RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-1}"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -129,6 +130,60 @@ preflight() {
   echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS:-vllm-default}"
   echo "prefix_caching=${ENABLE_PREFIX_CACHING}"
   echo "enforce_eager=${ENFORCE_EAGER}"
+  echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
+}
+
+validate_sif_runtime() {
+  local rt
+  rt="$(runtime_bin)"
+  "${rt}" exec "${SIF_PATH}" python3 - <<'PY'
+from importlib.metadata import version
+from pathlib import Path
+
+assert version("vllm") == "0.30.0", version("vllm")
+root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
+if not root.exists():
+    import importlib.util
+    spec = importlib.util.find_spec("vllm")
+    assert spec is not None and spec.origin is not None
+    root = Path(spec.origin).resolve().parent
+
+checks = {
+    root / "v1/attention/backends/mla/triton_mla_sparse.py": [
+        "def record_logical_topk_ready",
+        "DeviceCapability(8, 0)",
+    ],
+    root / "models/deepseek_v32/common/kernels.py": [
+        "SM80_SOFTWARE_E4M3FN",
+        "index_q_fp8_storage",
+    ],
+    root / "models/deepseek_v32/attention.py": [
+        "SM80_PIECEWISE_KV_BINDING_FIX",
+    ],
+    root / "model_executor/layers/sparse_attn_indexer.py": [
+        "_sm80_fp8_fp4_mqa_logits",
+    ],
+}
+for path, markers in checks.items():
+    text = path.read_text()
+    for marker in markers:
+        assert marker in text, f"{path}: missing {marker}"
+assert Path("/opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py").exists()
+print("GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS")
+PY
+}
+
+run_gpu_smoke() {
+  [[ "${RUN_GPU_SMOKE}" == "1" ]] || return 0
+  local rt first_gpu
+  rt="$(runtime_bin)"
+  first_gpu="${GPUS%%,*}"
+  echo "Running SM80 numerical/JIT smoke on physical GPU ${first_gpu}..."
+  "${rt}" exec --nv \
+    --env CUDA_VISIBLE_DEVICES="${first_gpu}" \
+    --env PYTHONUNBUFFERED=1 \
+    "${SIF_PATH}" \
+    python3 /opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py
 }
 
 build_args() {
@@ -186,6 +241,8 @@ run_server() {
   local rt host_ip
   rt="$(runtime_bin)"
   host_ip="$(local_host_ip)"
+  validate_sif_runtime
+  run_gpu_smoke
   build_args
 
   ENV_ARGS=(
