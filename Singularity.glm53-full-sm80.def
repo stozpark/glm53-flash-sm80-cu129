@@ -4,6 +4,7 @@ From: vllm/vllm-openai:v0.30.0
 %files
     patch_glm53_full_sm80.py /opt/glm53-full-sm80/patch_glm53_full_sm80.py
     vendor/glm53-full-sm80 /opt/glm53-full-sm80/vendor/glm53-full-sm80
+    tests/sm80_glm53_full_kernel_smoke.py /opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py
 
 %post
     set -eux
