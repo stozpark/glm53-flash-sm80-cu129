@@ -32,6 +32,9 @@ jobs:
           curl -fL --retry 5 --retry-delay 2 \
             https://huggingface.co/zai-org/GLM-5.3/resolve/main/config.json \
             -o /tmp/glm53-config.json
+          curl -fL --retry 5 --retry-delay 2 \
+            https://huggingface.co/zai-org/GLM-5.3/resolve/main/model.safetensors.index.json \
+            -o /tmp/glm53-index.json
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -66,6 +69,23 @@ jobs:
           assert q["activation_scheme"] == "dynamic"
           assert q["fmt"] == "e4m3"
           assert q["weight_block_size"] == [128, 128]
+
+          index = json.loads(Path("/tmp/glm53-index.json").read_text())
+          total_bytes = int(index["metadata"]["total_size"])
+          gib = total_bytes / (1024 ** 3)
+          avg16 = gib / 16.0
+          # BF16 MLA latent+RoPE cache: (512+64)*2 bytes/token/layer.
+          kv0 = 42 * 131072 * (512 + 64) * 2 / (1024 ** 3)
+          kv1 = 36 * 131072 * (512 + 64) * 2 / (1024 ** 3)
+          assert avg16 < 80.0
+          print(
+              f"GLM53_CHECKPOINT_SIZE_GIB={gib:.3f} "
+              f"AVG_WEIGHT_GIB_PER_16GPU={avg16:.3f}"
+          )
+          print(
+              f"GLM53_BF16_MLA_KV_128K_GIB_PER_RANK="
+              f"PP0:{kv0:.3f},PP1:{kv1:.3f}"
+          )
           print("GLM53_CURRENT_MODEL_CONTRACT=PASS")
           PY
 
