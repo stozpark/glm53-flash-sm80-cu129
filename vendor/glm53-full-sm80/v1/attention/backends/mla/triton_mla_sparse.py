@@ -10,7 +10,7 @@ from vllm.config import get_current_vllm_config_or_none
 from vllm.config.cache import CacheDType
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.platform_utils import num_compute_units
-from vllm.v1.attention.backend import AttentionBackend, AttentionCGSupport, MultipleOf
+from vllm.v1.attention.backend import AttentionBackend, AttentionCGSupport
 from vllm.v1.attention.backends.mla.xpu_mla_sparse import (
     XPUMLASparseImpl,
     XPUMLASparseMetadata,
@@ -140,10 +140,11 @@ class TritonMLASparseBackend(AttentionBackend):
         return TritonMLASparseImpl
 
     @staticmethod
-    def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
-        # DSA cache/indexer paths are happiest on 64-token pages; allowing
-        # larger multiples keeps the KV-cache planner flexible.
-        return [MultipleOf(64)]
+    def get_supported_kernel_block_sizes() -> list[int]:
+        # The current GLM-5.x DSA indexer layout is defined for 64-token pages.
+        # Advertise exactly 64 so the KV-cache planner cannot silently select
+        # 128+ and diverge from the paged-MQA/indexer assumptions.
+        return [64]
 
     @classmethod
     def is_mla(cls) -> bool:
