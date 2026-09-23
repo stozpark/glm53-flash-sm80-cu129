@@ -33,6 +33,70 @@ jobs:
             --vllm-root "$PWD/vllm030/vllm" \
             --vendor "$PWD/port/vendor/glm53-full-sm80"
 
+      - name: Verify patch scope and idempotence
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          root = Path("vllm030")
+          got = set()
+          for line in subprocess.check_output(
+              ["git", "-C", str(root), "status", "--porcelain"], text=True
+          ).splitlines():
+              got.add(line[3:])
+
+          expected = {
+              "vllm/model_executor/layers/sparse_attn_indexer.py",
+              "vllm/models/deepseek_v32/attention.py",
+              "vllm/models/deepseek_v32/common/kernels.py",
+              "vllm/platforms/cuda.py",
+              "vllm/v1/attention/backends/mla/indexer.py",
+              "vllm/v1/attention/backends/registry.py",
+              "vllm/v1/attention/backends/mla/triton_mla_sparse.py",
+              "vllm/v1/attention/ops/fp8_sm80.py",
+              "vllm/v1/attention/ops/mqa_logits_triton.py",
+              "vllm/v1/attention/ops/triton_mla_sparse_kernel.py",
+          }
+          assert got == expected, f"unexpected patch scope: got={sorted(got)}"
+          print("SM80_PATCH_SCOPE=PASS")
+          PY
+
+          git -C vllm030 diff --check
+          find vllm030/vllm -type f \( \
+            -path '*/sparse_attn_indexer.py' -o \
+            -path '*/deepseek_v32/attention.py' -o \
+            -path '*/deepseek_v32/common/kernels.py' -o \
+            -path '*/platforms/cuda.py' -o \
+            -path '*/backends/mla/indexer.py' -o \
+            -path '*/backends/registry.py' -o \
+            -path '*/backends/mla/triton_mla_sparse.py' -o \
+            -path '*/ops/fp8_sm80.py' -o \
+            -path '*/ops/mqa_logits_triton.py' -o \
+            -path '*/ops/triton_mla_sparse_kernel.py' \
+          \) -print0 | sort -z | xargs -0 sha256sum > /tmp/patched.before.sha256
+
+          python3 port/patch_glm53_full_sm80.py \
+            --vllm-root "$PWD/vllm030/vllm" \
+            --vendor "$PWD/port/vendor/glm53-full-sm80"
+
+          find vllm030/vllm -type f \( \
+            -path '*/sparse_attn_indexer.py' -o \
+            -path '*/deepseek_v32/attention.py' -o \
+            -path '*/deepseek_v32/common/kernels.py' -o \
+            -path '*/platforms/cuda.py' -o \
+            -path '*/backends/mla/indexer.py' -o \
+            -path '*/backends/registry.py' -o \
+            -path '*/backends/mla/triton_mla_sparse.py' -o \
+            -path '*/ops/fp8_sm80.py' -o \
+            -path '*/ops/mqa_logits_triton.py' -o \
+            -path '*/ops/triton_mla_sparse_kernel.py' \
+          \) -print0 | sort -z | xargs -0 sha256sum > /tmp/patched.after.sha256
+          cmp /tmp/patched.before.sha256 /tmp/patched.after.sha256
+          echo SM80_PATCH_IDEMPOTENT=PASS
+
       - name: Compile every patched Python module
         shell: bash
         run: |
@@ -49,7 +113,18 @@ jobs:
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
             vllm030/vllm/v1/attention/ops/mqa_logits_triton.py \
             vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py \
-            port/tests/sm80_glm53_full_kernel_smoke.py
+            port/tests/sm80_glm53_full_kernel_smoke.py \
+            port/tests/validate_glm53_full_static.py \
+            port/tests/test_fp8e4m3fn_reference.py
+
+      - name: Run CPU semantic/reference validation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 port/tests/validate_glm53_full_static.py \
+            --vllm-root "$PWD/vllm030/vllm" \
+            --port-root "$PWD/port"
+          python3 port/tests/test_fp8e4m3fn_reference.py
 
       - name: Verify SM80 invariants
         shell: bash
@@ -125,5 +200,7 @@ jobs:
           grep -q 'BLOCK_SIZE:-64' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'ENABLE_PREFIX_CACHING:-1' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'ENFORCE_EAGER:-0' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'return capability == DeviceCapability(8, 0)' \
+            port/vendor/glm53-full-sm80/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'index_rope_interleave=True' port/tests/sm80_glm53_full_kernel_smoke.py
           echo CUDA13_PROFILE=PASS
