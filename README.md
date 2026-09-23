@@ -969,17 +969,22 @@ token t+1 → 앞 token을 포함해서 pool completion 검사
 
 request끼리는 서로 다른 tail block을 쓰므로 병렬 처리할 수 있습니다.
 
-## Triton paged-MQA에는 1D seq_lens 전달
+## Triton paged-MQA는 1D/2D seq_lens를 모두 보존
 
-vLLM MTP metadata는 `[B, next_n]` seq_lens를 가질 수 있지만 paged-MQA kernel은 request당 현재 context length 하나가 필요합니다.
+DeepGEMM과 동일하게 SM80 Triton paged-MQA도 두 형태를 모두 받도록 패치합니다.
 
-```python
-seq_lens[:, -1]
+```text
+[B]         request-final context length
+[B, next_n] 각 draft token의 effective context length
 ```
 
-을 넘깁니다.
+2D 입력에서는 각 값이 이미 해당 query가 볼 수 있는 정확한 길이이므로 causal upper bound를 `context_len - 1`로 사용합니다. 1D 입력에서는 기존처럼 request-final length에서 `next_n` 위치를 복원합니다.
 
-반면 downstream Top-K/tail expansion에서는 token별 position 정보가 필요하므로 원래 2D metadata를 무조건 없애면 안 됩니다. 두 의미를 분리해서 사용합니다.
+이 구분은 KPool에서 특히 중요합니다. 예를 들어 `index_kpool=16`, MTP1(`next_n=2`)에서 token 길이가 32, 33이면 압축 길이는 `[2, 2]`입니다. 예전 fallback처럼 마지막 열 하나만 남긴 뒤 `[1, 2]`로 역산하면 첫 draft token이 pool 하나를 잃습니다.
+
+현재 패치는 `seq_lens[:, -1]` 축약을 제거하고 원래 2D metadata를 Triton kernel에 그대로 전달합니다. MTP3처럼 Ampere에서 token별 row로 flatten되는 경로도 `[B, 1]` 입력으로 같은 kernel을 사용합니다.
+
+> 이 MTP1 수정은 source/static 검증까지 완료했습니다. 실제 A100 MTP1 serving은 별도 runtime A/B 검증이 필요합니다.
 
 ---
 
