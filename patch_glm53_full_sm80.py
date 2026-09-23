@@ -83,22 +83,6 @@ def patch_indexer_metadata(text: str) -> str:
     if "has_deep_gemm" in text:
         raise RuntimeError("indexer metadata: stale has_deep_gemm reference remains")
 
-    # split_decodes_and_prefills explicitly requires decode-first ordering.
-    old = """        next_n = self.num_speculative_tokens + 1
-        self.decode_threshold = next_n
-        self.reorder_batch_threshold = None
-"""
-    new = """        next_n = self.num_speculative_tokens + 1
-        self.decode_threshold = next_n
-        # split_decodes_and_prefills assumes decode -> short-extend -> prefill.
-        # Without a vote here, a decode behind a prefill can be scored by the
-        # prefill indexer path and produce a different sparse Top-K.
-        self.reorder_batch_threshold = self.decode_threshold
-"""
-    if old in text:
-        text = text.replace(old, new, 1)
-    elif "self.reorder_batch_threshold = self.decode_threshold" not in text:
-        raise RuntimeError("indexer metadata: decode-first reorder anchor not found")
     return text
 
 
@@ -497,36 +481,6 @@ def patch_piecewise_kv_binding(text: str) -> str:
     )
 
 
-def patch_block_table(text: str) -> str:
-    marker = "SM80_DSA_SELF_PAD"
-    if marker in text:
-        return text
-
-    old = """        self.num_blocks_per_row[row_idx] += num_blocks
-        self.block_table.np[row_idx, start : start + num_blocks] = block_ids
-"""
-    new = """        self.num_blocks_per_row[row_idx] += num_blocks
-        self.block_table.np[row_idx, start : start + num_blocks] = block_ids
-        # SM80_DSA_SELF_PAD: the indexer expands full-width rows.  Never leave
-        # another request's stale block ids in the unused tail.
-        end = start + num_blocks
-        if num_blocks > 0 and end < self.block_table.np.shape[1]:
-            self.block_table.np[row_idx, end:] = self.block_table.np[row_idx, end - 1]
-"""
-    text = replace_once(text, old, new, "block table: self-pad tail")
-
-    old = """        block_table_np[tgt, :num_blocks] = block_table_np[src, :num_blocks]
-        self.num_blocks_per_row[tgt] = num_blocks
-"""
-    new = """        # Move the padded tail too; a prefix-only copy would retain the
-        # previous target row's stale tail.
-        block_table_np[tgt] = block_table_np[src]
-        self.num_blocks_per_row[tgt] = num_blocks
-"""
-    text = replace_once(text, old, new, "block table: full-row move")
-    return text
-
-
 def patch_file(path: Path, fn) -> None:
     old = path.read_text(encoding="utf-8")
     new = fn(old)
@@ -565,7 +519,6 @@ def main() -> None:
     patch_file(root / "model_executor/layers/sparse_attn_indexer.py", patch_sparse_indexer)
     patch_file(root / "models/deepseek_v32/common/kernels.py", patch_deepseek_kernels)
     patch_file(root / "models/deepseek_v32/attention.py", patch_piecewise_kv_binding)
-    patch_file(root / "v1/worker/block_table.py", patch_block_table)
 
     print("GLM53_FULL_SM80_V030_PATCH=PASS")
 
