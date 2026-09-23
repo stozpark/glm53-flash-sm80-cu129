@@ -43,6 +43,7 @@ jobs:
             vllm030/vllm/v1/attention/backends/mla/indexer.py \
             vllm030/vllm/model_executor/layers/sparse_attn_indexer.py \
             vllm030/vllm/models/deepseek_v32/common/kernels.py \
+            vllm030/vllm/models/deepseek_v32/attention.py \
             vllm030/vllm/models/deepseek_v32/nvidia/model.py \
             vllm030/vllm/v1/worker/block_table.py \
             vllm030/vllm/v1/attention/ops/fp8_sm80.py \
@@ -60,6 +61,7 @@ jobs:
           IDX=vllm030/vllm/v1/attention/backends/mla/indexer.py
           SIDX=vllm030/vllm/model_executor/layers/sparse_attn_indexer.py
           KERN=vllm030/vllm/models/deepseek_v32/common/kernels.py
+          ATTN=vllm030/vllm/models/deepseek_v32/attention.py
           MODEL=vllm030/vllm/models/deepseek_v32/nvidia/model.py
           BT=vllm030/vllm/v1/worker/block_table.py
           MLA=vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
@@ -96,7 +98,8 @@ jobs:
 
           grep -q 'def record_logical_topk_ready' \
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
-          grep -q '_sm80_pp_topk_relay_buf' "$MODEL"
+          grep -q 'SM80_PIECEWISE_KV_BINDING_FIX' "$ATTN"
+          ! grep -q '_sm80_pp_topk_relay_buf' "$MODEL"
           grep -q 'SM80_DSA_SELF_PAD' "$BT"
           grep -q 'self.reorder_batch_threshold = self.decode_threshold' "$IDX"
 
@@ -121,4 +124,10 @@ jobs:
           bash -n port/serve_glm53_full_tp8_pp2.sh
           bash -n port/serve_glm53_full_tp16.sh
           grep -q 'sm80_glm53_full_kernel_smoke.py' port/Singularity.glm53-full-sm80.def
+          grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'BLOCK_SIZE:-64' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'ENABLE_PREFIX_CACHING:-1' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'ENFORCE_EAGER:-0' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'index_rope_interleave=True' port/tests/sm80_glm53_full_kernel_smoke.py
           echo CUDA13_PROFILE=PASS
