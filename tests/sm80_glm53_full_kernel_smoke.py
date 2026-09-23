@@ -46,6 +46,57 @@ def make_cos_sin(max_pos: int, rot_dim: int, device: torch.device) -> torch.Tens
     return torch.cat([f.cos(), f.sin()], dim=-1)
 
 
+def rope_ref(
+    x: torch.Tensor,
+    pos: torch.Tensor,
+    cos_sin: torch.Tensor,
+    *,
+    interleave: bool,
+) -> torch.Tensor:
+    rot = cos_sin.shape[-1]
+    half = rot // 2
+    cs = cos_sin[pos.long()]
+    cos, sin = cs[..., :half], cs[..., half:]
+    out = x.float().clone()
+    r = out[..., :rot]
+    if interleave:
+        x1, x2 = r[..., 0::2].clone(), r[..., 1::2].clone()
+        r[..., 0::2] = x1 * cos - x2 * sin
+        r[..., 1::2] = x2 * cos + x1 * sin
+    else:
+        x1, x2 = r[..., :half].clone(), r[..., half:].clone()
+        r[..., :half] = x1 * cos - x2 * sin
+        r[..., half:] = x2 * cos + x1 * sin
+    return out
+
+
+def layer_norm_ref(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    xf = x.float()
+    mean = xf.mean(dim=-1, keepdim=True)
+    var = (xf - mean).pow(2).mean(dim=-1, keepdim=True)
+    return (xf - mean) * torch.rsqrt(var + EPS) * w.float() + b.float()
+
+
+def ue8m0_ref(vals: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    amax = vals.float().abs().amax(dim=-1, keepdim=True)
+    scale = torch.clamp(amax, min=1e-4) / 448.0
+    scale = torch.exp2(torch.ceil(torch.log2(scale)))
+    q = (vals.float() / scale).to(FP8)
+    return q, scale.squeeze(-1)
+
+
+def fp8_max_ulp(a: torch.Tensor, b: torch.Tensor) -> int:
+    def key(t: torch.Tensor) -> torch.Tensor:
+        u = t.contiguous().view(torch.uint8).to(torch.int64)
+        return torch.where(u >= 0x80, 0xFF - u, u + 0x80)
+
+    return int((key(a) - key(b)).abs().max().item())
+
+
 def main() -> None:
     assert torch.cuda.is_available(), "CUDA is required"
     dev = torch.device("cuda:0")
@@ -126,6 +177,12 @@ def main() -> None:
     k_scales = flat[block_size * INDEX_HEAD_DIM :].view(torch.float32)
     assert torch.isfinite(k_values[:n].to(torch.float32)).all()
     assert torch.isfinite(k_scales[:n]).all() and torch.all(k_scales[:n] > 0)
+
+    ik_ref = layer_norm_ref(index_k, index_kw, index_kb)
+    ik_ref = rope_ref(ik_ref, pos, cos_sin, interleave=False)
+    k_ref, k_scale_ref = ue8m0_ref(ik_ref)
+    assert fp8_max_ulp(k_values[:n], k_ref) <= 1, "index-K FP8 differs by >1 ULP"
+    torch.testing.assert_close(k_scales[:n], k_scale_ref, rtol=0, atol=0)
     print("SM80_FUSED_NORM_ROPE_INDEX_K=PASS")
 
     # ------------------------------------------------------------------
@@ -160,6 +217,22 @@ def main() -> None:
     assert q_pe_roped.dtype == torch.bfloat16
     assert torch.isfinite(iq_fp8.to(torch.float32)).all()
     assert torch.isfinite(iw_out).all()
+
+    iq_ref = rope_ref(
+        index_q.float(),
+        pos[:, None].expand(n, INDEX_HEADS),
+        cos_sin,
+        interleave=False,
+    )
+    iq_ref_fp8, iq_scale_ref = ue8m0_ref(iq_ref)
+    assert fp8_max_ulp(iq_fp8, iq_ref_fp8) <= 1, "index-Q FP8 differs by >1 ULP"
+    iw_ref = (
+        index_w
+        * iq_scale_ref
+        * (INDEX_HEAD_DIM**-0.5)
+        * (INDEX_HEADS**-0.5)
+    )
+    torch.testing.assert_close(iw_out, iw_ref, rtol=1e-3, atol=1e-3)
     print("SM80_FUSED_Q_INDEX_Q=PASS")
 
     # ------------------------------------------------------------------
@@ -177,9 +250,19 @@ def main() -> None:
     )
     torch.cuda.synchronize()
     assert logits.shape == (n, block_size)
+    qf = iq_fp8.float()
+    kf = k_values.float() * k_scales[:, None]
+    dense = torch.einsum("mhd,nd->mhn", qf, kf)
+    dense = (dense * iw_out[:, :, None]).sum(dim=1)
     for row in range(n):
         assert torch.isfinite(logits[row, : row + 1]).all()
         assert torch.isneginf(logits[row, row + 1 :]).all()
+        torch.testing.assert_close(
+            logits[row, : row + 1],
+            dense[row, : row + 1],
+            rtol=2e-2,
+            atol=2e-2,
+        )
     print("SM80_TRITON_MQA_PREFILL=PASS")
 
     # ------------------------------------------------------------------
@@ -201,6 +284,12 @@ def main() -> None:
     assert paged.shape == (1, block_size)
     assert torch.isfinite(paged[0, :n]).all()
     assert torch.isneginf(paged[0, n:]).all()
+    torch.testing.assert_close(
+        paged[0, :n],
+        dense[0, :n],
+        rtol=3e-2,
+        atol=3e-2,
+    )
     print("SM80_TRITON_MQA_DECODE=PASS")
 
     # ------------------------------------------------------------------
@@ -220,6 +309,21 @@ def main() -> None:
     torch.cuda.synchronize()
     assert out.shape == (1, 8, 512)
     assert torch.isfinite(out).all()
+    # Dense reference over exactly the selected rows. The sparse MLA kernel
+    # uses the first 512 dimensions as V and all 576 dimensions for QK.
+    qf_sparse = q_sparse.float()
+    kf_sparse = kv_sparse[:, 0, :].float()
+    vf_sparse = kv_sparse[:, 0, :512].float()
+    scores = torch.einsum("thd,nd->thn", qf_sparse, kf_sparse)
+    scores = scores * (1.0 / math.sqrt(576))
+    probs = torch.softmax(scores, dim=-1)
+    ref_out = torch.einsum("thn,nv->thv", probs, vf_sparse)
+    torch.testing.assert_close(
+        out.float(),
+        ref_out,
+        rtol=3e-2,
+        atol=3e-2,
+    )
     print("SM80_TRITON_MLA_SPARSE=PASS")
 
     print("GLM53_FULL_SM80_GPU_SMOKE=PASS")
