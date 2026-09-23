@@ -7,6 +7,10 @@ Target architecture:
 This is intentionally separate from GLM-5.3-Flash.  Full GLM-5.3 does not use
 KPool/KPoolTail; the Ampere blockers are the DSA FP8 indexer, sparse MLA and
 DeepSeek-V3.2 fused FP8 quantization kernels.
+
+The 2-node baseline deliberately uses VLLM_PP_LAYER_PARTITION=42,36 so each
+pipeline stage starts its sparse-index sharing group on a full-indexer layer.
+This avoids carrying DSA Top-K state through IntermediateTensors.
 """
 from __future__ import annotations
 
@@ -429,95 +433,68 @@ def _sm80_fp8_fp4_paged_mqa_logits(
     return text
 
 
-def patch_pp_topk_relay(text: str) -> str:
-    marker = "_sm80_pp_topk_relay_buf"
+def patch_piecewise_kv_binding(text: str) -> str:
+    """Backport the DeepSeek-V3.2 PIECEWISE CUDA-graph KV binding fix.
+
+    During PIECEWISE capture, attention metadata is absent but the persistent
+    slot-mapping buffers and bound KV caches must still be passed to
+    fused_norm_rope.  Passing None bakes "never write KV" into the captured
+    graph and can silently corrupt decode after the first token.
+    """
+    marker = "SM80_PIECEWISE_KV_BINDING_FIX"
     if marker in text:
         return text
 
-    old = """        self.topk_indices_buffer = torch.empty(
-            vllm_config.scheduler_config.max_num_batched_tokens,
-            config.index_topk,
-            dtype=torch.int32,
-            device=self.device,
-        )
-"""
-    new = old + """        # PP stages have separate model instances.  Carry the current DSA
-        # selections explicitly when a stage begins on a shared-index layer.
-        self._sm80_pp_topk_relay_buf = self.topk_indices_buffer
-"""
-    text = replace_once(text, old, new, "PP top-k: private relay buffer")
-
-    old = """        self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
-            ["hidden_states", "residual"], config.hidden_size
-        )
-"""
-    new = """        if parallel_config.pipeline_parallel_size > 1:
-            _hidden_size = config.hidden_size
-            _index_topk = config.index_topk
-
-            def _make_empty_intermediate_tensors(batch_size, dtype, device):
-                return IntermediateTensors(
-                    {
-                        "hidden_states": torch.zeros(
-                            (batch_size, _hidden_size), dtype=dtype, device=device
-                        ),
-                        "residual": torch.zeros(
-                            (batch_size, _hidden_size), dtype=dtype, device=device
-                        ),
-                        "topk_indices": torch.full(
-                            (batch_size, _index_topk),
-                            -1,
-                            dtype=torch.int32,
-                            device=device,
-                        ),
-                    }
-                )
-
-            self.make_empty_intermediate_tensors = _make_empty_intermediate_tensors
+    old = """        if forward_context.attn_metadata is None or self.use_pcp:
+            mla_kv_cache = None
+            mla_k_scale = None
+            indexer_k_cache = None
+            mla_slot = None
+            indexer_slot = None
         else:
-            self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
-                ["hidden_states", "residual"], config.hidden_size
-            )
+            mla_kv_cache = None if hisparse_cache is not None else self.kv_cache
+            mla_k_scale = self._k_scale
 """
-    text = replace_once(text, old, new, "PP top-k: intermediate schema")
 
-    old = """        else:
-            assert intermediate_tensors is not None
-            hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
-"""
-    new = """        else:
-            assert intermediate_tensors is not None
-            hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
-            incoming_topk = intermediate_tensors.tensors.get("topk_indices")
-            if incoming_topk is not None:
-                n = min(
-                    incoming_topk.shape[0],
-                    self._sm80_pp_topk_relay_buf.shape[0],
-                )
-                self._sm80_pp_topk_relay_buf[:n].copy_(incoming_topk[:n])
-"""
-    text = replace_once(text, old, new, "PP top-k: receive")
+    new = """        # SM80_PIECEWISE_KV_BINDING_FIX: mirror the current upstream DSA
+        # graph-capture rule.  Capture has no attention metadata, but the real
+        # cache views and persistent slot buffers must be baked into the graph.
+        if self.use_pcp:
+            mla_kv_cache = None
+            mla_k_scale = None
+            indexer_k_cache = None
+            mla_slot = None
+            indexer_slot = None
+        elif forward_context.attn_metadata is None:
+            if (
+                mla_slot is not None
+                and hisparse_cache is None
+                and self.kv_cache.numel() > 0
+            ):
+                mla_kv_cache = self.kv_cache
+                mla_k_scale = self._k_scale
+            else:
+                mla_kv_cache = None
+                mla_k_scale = None
+                mla_slot = None
 
-    old = """            return IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual}
-            )
+            if (
+                indexer_slot is not None
+                and self.indexer is not None
+                and self.indexer.k_cache.kv_cache.numel() > 0
+            ):
+                indexer_k_cache = self.indexer.k_cache.kv_cache
+            else:
+                indexer_k_cache = None
+                indexer_slot = None
+        else:
+            mla_kv_cache = None if hisparse_cache is not None else self.kv_cache
+            mla_k_scale = self._k_scale
 """
-    new = """            return IntermediateTensors(
-                {
-                    "hidden_states": hidden_states,
-                    "residual": residual,
-                    # clone because PP send may outlive the rank-local buffer
-                    # before the next microbatch rewrites it.
-                    "topk_indices": self._sm80_pp_topk_relay_buf[
-                        : positions.shape[0]
-                    ].clone(),
-                }
-            )
-"""
-    text = replace_once(text, old, new, "PP top-k: send")
-    return text
+
+    return replace_once(
+        text, old, new, "deepseek attention: PIECEWISE KV binding"
+    )
 
 
 def patch_block_table(text: str) -> str:
@@ -587,7 +564,7 @@ def main() -> None:
     patch_file(root / "v1/attention/backends/mla/indexer.py", patch_indexer_metadata)
     patch_file(root / "model_executor/layers/sparse_attn_indexer.py", patch_sparse_indexer)
     patch_file(root / "models/deepseek_v32/common/kernels.py", patch_deepseek_kernels)
-    patch_file(root / "models/deepseek_v32/nvidia/model.py", patch_pp_topk_relay)
+    patch_file(root / "models/deepseek_v32/attention.py", patch_piecewise_kv_binding)
     patch_file(root / "v1/worker/block_table.py", patch_block_table)
 
     print("GLM53_FULL_SM80_V030_PATCH=PASS")
