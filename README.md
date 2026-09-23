@@ -43,6 +43,10 @@ index K
 
 Triton 안에서는 A100이 지원하지 않는 FP8 변환 타입을 만들지 않습니다. `uint8` storage에 E4M3FN bit pattern을 직접 쓰고, Python 경계에서만 `torch.float8_e4m3fn` zero-copy view를 사용합니다. FP8 값 자체와 scale semantics는 유지됩니다.
 
+### v0.30.0 이후 upstream 변경도 확인
+
+v0.30.0 태그 이후 DeepSeek-V3.2 공통 kernel을 수정한 #51915도 확인했습니다. 이 변경은 ROCm/AITER의 shuffled indexer-cache layout과 E4M3FNUZ 처리가 핵심입니다. NVIDIA의 `DeepseekV32IndexerCache`는 기본적으로 non-shuffled layout을 사용하므로 A100 baseline에 필요한 수정은 아닙니다. 전체 commit을 가져오지 않고, SM80에 직접 필요한 software E4M3FN/DeepGEMM fallback만 유지합니다.
+
 ### SIF를 여러 번 만들지 않기 위한 검증 순서
 
 이번 브랜치는 **모델을 올리기 전에 A100 한 장으로 핵심 커널을 먼저 JIT compile**할 수 있도록 smoke test를 SIF 안에 포함합니다.
