@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SIF="${1:-${SIF_PATH:-$(pwd)/glm53-full-sm80-vllm030-cu130.sif}"
+SIF="${1:-${SIF_PATH:-$(pwd)/glm53-full-sm80-vllm030-cu130.sif}}"
 GPU="${GPU:-0}"
 
 if [[ ! -f "${SIF}" ]]; then
