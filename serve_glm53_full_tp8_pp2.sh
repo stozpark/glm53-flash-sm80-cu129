@@ -43,6 +43,7 @@ BLOCK_SIZE="${BLOCK_SIZE:-64}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-1}"
+EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260923-3"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -141,6 +142,8 @@ from importlib.metadata import version
 from pathlib import Path
 
 assert version("vllm") == "0.30.0", version("vllm")
+revision = Path("/opt/glm53-full-sm80/PORT_REVISION").read_text().strip()
+assert revision == "glm53-full-sm80-cu130-v030-r20260923-3", revision
 root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 if not root.exists():
     import importlib.util
