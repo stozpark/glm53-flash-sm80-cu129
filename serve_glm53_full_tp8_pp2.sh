@@ -199,7 +199,8 @@ build_args() {
     --reasoning-parser glm47
     --enable-auto-tool-choice
 
-    # 2 nodes x 8 A100. vLLM auto-selects the MP executor when nnodes > 1.
+    # 2 nodes x 8 A100 using vLLM's native multi-node multiprocessing.
+    --distributed-executor-backend mp
     --tensor-parallel-size 8
     --pipeline-parallel-size 2
     --nnodes 2
