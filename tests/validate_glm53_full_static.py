@@ -129,6 +129,21 @@ def main() -> None:
         "DeepseekV32IndexerBackend page size",
     )
 
+    # Exact full-GLM model routing and parser availability in v0.30.
+    registry = (vllm / "model_executor/models/registry.py").read_text()
+    deepseek_model = (vllm / "model_executor/models/deepseek_v2.py").read_text()
+    tool_parsers = (vllm / "tool_parsers/__init__.py").read_text()
+    reasoning_parsers = (vllm / "reasoning/__init__.py").read_text()
+    must(
+        registry,
+        '"GlmMoeDsaForCausalLM": ("vllm.models.deepseek_v32", "GlmMoeDsaForCausalLM")',
+        "full GLM registry",
+    )
+    must(deepseek_model, 'model_type", None) == "glm_moe_dsa"', "GLM model type")
+    must(deepseek_model, "return torch.float32", "GLM FP32 MoE router")
+    must(tool_parsers, '"glm47"', "GLM tool parser")
+    must(reasoning_parsers, '"glm47"', "GLM reasoning parser")
+
     # Marlin must support A100 and GLM-5.3's 128x128 block-FP8 weights.
     marlin_linear = (
         vllm / "model_executor/kernels/linear/scaled_mm/marlin.py"
