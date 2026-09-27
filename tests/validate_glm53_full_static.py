@@ -116,6 +116,11 @@ def main() -> None:
     must(backend, "return capability == DeviceCapability(8, 0)", "backend SM80 gate")
     must(backend, "return [64]", "backend block size")
     must(backend, "def record_logical_topk_ready", "v0.30 DSA API")
+    must(
+        backend,
+        "supports_dense_mha_prefill = False",
+        "sparse-only prefill routing",
+    )
     must(backend, "_INDEXER_NUM_HEADS = 32", "GLM-5.3 indexer heads")
     must(backend, "_INDEXER_HEAD_DIM = 128", "GLM-5.3 indexer dim")
     must(smoke, "INDEX_HEADS = 32", "smoke config")
@@ -144,6 +149,18 @@ def main() -> None:
     must(deepseek_model, "return torch.float32", "GLM FP32 MoE router")
     must(tool_parsers, '"glm47"', "GLM tool parser")
     must(reasoning_parsers, '"glm47"', "GLM reasoning parser")
+
+    vllm_cfg = (vllm / "config/vllm.py").read_text()
+    must(
+        vllm_cfg,
+        '"GlmMoeDsaForCausalLM",',
+        "GLM DSA breakable CUDA-graph default",
+    )
+    must(
+        vllm_cfg,
+        "self.compilation_config.mode = CompilationMode.NONE",
+        "breakable CUDA graphs disable Inductor",
+    )
 
     # Marlin must support A100 and GLM-5.3's 128x128 block-FP8 weights.
     fp8_quant = (
