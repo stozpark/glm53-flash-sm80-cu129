@@ -154,6 +154,7 @@ if not root.exists():
 checks = {
     root / "v1/attention/backends/mla/triton_mla_sparse.py": [
         "def record_logical_topk_ready",
+        "supports_dense_mha_prefill = False",
         "DeviceCapability(8, 0)",
     ],
     root / "models/deepseek_v32/common/kernels.py": [
