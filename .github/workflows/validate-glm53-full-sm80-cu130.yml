@@ -116,6 +116,9 @@ jobs:
               "vllm/model_executor/layers/sparse_attn_indexer.py",
               "vllm/models/deepseek_v32/attention.py",
               "vllm/models/deepseek_v32/common/kernels.py",
+              "vllm/model_executor/layers/attention/mla_attention.py",
+              "vllm/v1/core/kv_cache_utils.py",
+              "vllm/v1/kv_cache_interface.py",
               "vllm/platforms/cuda.py",
               "vllm/v1/attention/backends/mla/indexer.py",
               "vllm/v1/attention/backends/registry.py",
@@ -172,6 +175,9 @@ jobs:
             vllm030/vllm/model_executor/layers/sparse_attn_indexer.py \
             vllm030/vllm/models/deepseek_v32/common/kernels.py \
             vllm030/vllm/models/deepseek_v32/attention.py \
+            vllm030/vllm/model_executor/layers/attention/mla_attention.py \
+            vllm030/vllm/v1/core/kv_cache_utils.py \
+            vllm030/vllm/v1/kv_cache_interface.py \
             vllm030/vllm/models/deepseek_v32/nvidia/model.py \
             vllm030/vllm/v1/attention/ops/fp8_sm80.py \
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py \
@@ -201,6 +207,9 @@ jobs:
           KERN=vllm030/vllm/models/deepseek_v32/common/kernels.py
           ATTN=vllm030/vllm/models/deepseek_v32/attention.py
           MODEL=vllm030/vllm/models/deepseek_v32/nvidia/model.py
+          MLAC=vllm030/vllm/model_executor/layers/attention/mla_attention.py
+          KVI=vllm030/vllm/v1/kv_cache_interface.py
+          KVU=vllm030/vllm/v1/core/kv_cache_utils.py
           MLA=vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py
           MQA=vllm030/vllm/v1/attention/ops/mqa_logits_triton.py
 
@@ -237,6 +246,10 @@ jobs:
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'SM80_PIECEWISE_KV_BINDING_FIX' "$ATTN"
           grep -q 'topk_backend=self.indexer.indexer_op.topk_backend' "$ATTN"
+          grep -q 'SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT' "$MLAC"
+          grep -q 'block_stride_alignment: int | None = None' "$KVI"
+          grep -q 'SM80_MLA_STRIDE_ALIGNMENTS' "$KVU"
+          grep -q 'math.lcm(\*stride_alignments)' "$KVU"
           ! grep -q '_sm80_pp_topk_relay_buf' "$MODEL"
 
           # Long-context pointer arithmetic guards.
