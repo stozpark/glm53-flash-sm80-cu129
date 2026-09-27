@@ -29,8 +29,8 @@ MASTER_PORT="${MASTER_PORT:-29501}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.3}"
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 
-# A100 bring-up cap. GLM-5.3 supports 1M, but this port uses BF16 main MLA KV
-# instead of the official FP8 KV path. Raise this after the 128K baseline passes.
+# Production context default for BF16 main MLA KV on 80GB A100.
+# GLM-5.3 supports longer contexts, but BF16 KV scales linearly with context.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 
 # Production defaults. Keep CUDA graphs and prefix caching enabled from the
@@ -259,6 +259,10 @@ run_server() {
     # split starts PP1 on a shared-index layer (39); 42/36 starts it on the
     # next full-indexer layer and removes cross-stage Top-K state.
     --env VLLM_PP_LAYER_PARTITION="${PP_LAYER_PARTITION}"
+    # GlmMoeDsa is a v0.30 breakable-CUDA-graph architecture. Force this
+    # explicitly so a host environment cannot re-enable the unsafe
+    # Inductor+PP graph combination reported in #49844.
+    --env VLLM_USE_BREAKABLE_CUDAGRAPH=1
   )
 
   # Only pin NCCL/Gloo to an interface when the user asks for it. vLLM's
