@@ -68,6 +68,7 @@ def main() -> None:
         'ENFORCE_EAGER="${ENFORCE_EAGER:-0}"',
         "--kv-cache-dtype bfloat16",
         '"backend":"TRITON_MLA_SPARSE"',
+        "--env VLLM_USE_BREAKABLE_CUDAGRAPH=1",
         "--linear-backend marlin",
         "--moe-backend marlin",
         "--tool-call-parser glm47",
@@ -151,15 +152,27 @@ def main() -> None:
     must(reasoning_parsers, '"glm47"', "GLM reasoning parser")
 
     vllm_cfg = (vllm / "config/vllm.py").read_text()
+    b0 = vllm_cfg.index("DEFAULT_BREAKABLE_CUDAGRAPH_ARCHITECTURES")
+    b1 = vllm_cfg.index("@lru_cache", b0)
     must(
-        vllm_cfg,
+        vllm_cfg[b0:b1],
         '"GlmMoeDsaForCausalLM",',
         "GLM DSA breakable CUDA-graph default",
     )
+    m0 = vllm_cfg.index("def _maybe_enable_breakable_cudagraph")
+    m1 = vllm_cfg.index("@property", m0)
     must(
-        vllm_cfg,
+        vllm_cfg[m0:m1],
         "self.compilation_config.mode = CompilationMode.NONE",
         "breakable CUDA graphs disable Inductor",
+    )
+    deepseek_nvidia = (
+        vllm / "models/deepseek_v32/nvidia/model.py"
+    ).read_text()
+    must_not(
+        deepseek_nvidia,
+        "@support_torch_compile",
+        "v0.30 GlmMoeDsa must not enter Inductor compile path",
     )
 
     # Marlin must support A100 and GLM-5.3's 128x128 block-FP8 weights.
