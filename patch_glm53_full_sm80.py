@@ -476,9 +476,26 @@ def patch_piecewise_kv_binding(text: str) -> str:
             mla_k_scale = self._k_scale
 """
 
-    return replace_once(
+    text = replace_once(
         text, old, new, "deepseek attention: PIECEWISE KV binding"
     )
+
+    # Upstream #58594 (merged after v0.30): the direct sparse_attn_indexer()
+    # call must use the backend selected when the layer/indexer was built.
+    # Otherwise it silently falls back to topk_backend="auto".
+    topk_marker = "topk_backend=self.indexer.indexer_op.topk_backend"
+    if topk_marker not in text:
+        old_topk = """                skip_topk_buffer_clear=True,
+            )
+"""
+        new_topk = """                skip_topk_buffer_clear=True,
+                topk_backend=self.indexer.indexer_op.topk_backend,
+            )
+"""
+        text = replace_once(
+            text, old_topk, new_topk, "deepseek attention: sparse top-k backend"
+        )
+    return text
 
 
 def patch_file(path: Path, fn) -> None:
