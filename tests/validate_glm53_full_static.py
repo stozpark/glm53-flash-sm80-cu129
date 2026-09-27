@@ -191,6 +191,37 @@ def main() -> None:
         "SM80 DeepGEMM hard gate",
     )
 
+    mla_attention = (
+        vllm / "model_executor/layers/attention/mla_attention.py"
+    ).read_text()
+    kv_interface = (vllm / "v1/kv_cache_interface.py").read_text()
+    kv_utils = (vllm / "v1/core/kv_cache_utils.py").read_text()
+    must(
+        mla_attention,
+        "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT",
+        "Triton MLA packed-block row alignment",
+    )
+    must(
+        mla_attention,
+        'self.attn_backend.get_name() == "TRITON_MLA_SPARSE"',
+        "alignment limited to Triton MLA",
+    )
+    must(
+        kv_interface,
+        "block_stride_alignment: int | None = None",
+        "MLA cache stride contract",
+    )
+    must(
+        kv_utils,
+        "SM80_MLA_STRIDE_ALIGNMENTS",
+        "allocator stride alignment",
+    )
+    must(
+        kv_utils,
+        "math.lcm(*stride_alignments)",
+        "allocator LCM alignment",
+    )
+
     q0 = patched_kernels.index("def _fp8_ue8m0_quantize")
     q1 = patched_kernels.index("def _fp8_quant_and_cache_write", q0)
     must_not(patched_kernels[q0:q1], "tl.float8e4nv", "index-K active quantizer")
