@@ -498,6 +498,123 @@ def patch_piecewise_kv_binding(text: str) -> str:
     return text
 
 
+
+def patch_mla_stride_alignment(text: str) -> str:
+    """Publish the physical-row alignment required by TRITON_MLA_SPARSE.
+
+    The sparse backend flattens a paged BF16 MLA cache into token rows via
+    flat_kv_row_view().  In a packed block layout the inter-block stride may
+    include other layers' pages, so the allocator must round that physical
+    stride to a whole MLA row.
+    """
+    marker = "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT"
+    if marker in text:
+        return text
+
+    old = """        return MLAAttentionSpec(
+            **common_kwargs,
+            is_index_group_leader=self.indexer is not None,
+            non_causal_multi_token_decode=self.non_causal_multi_token_decode,
+        )
+"""
+    new = """        spec = MLAAttentionSpec(
+            **common_kwargs,
+            is_index_group_leader=self.indexer is not None,
+            non_causal_multi_token_decode=self.non_causal_multi_token_decode,
+        )
+        # SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT: flat_kv_row_view addresses
+        # physical blocks in whole latent+RoPE rows.  Packed cache blocks must
+        # therefore start on an exact row boundary.
+        if self.attn_backend.get_name() == "TRITON_MLA_SPARSE":
+            spec = replace(
+                spec, block_stride_alignment=spec.state_content_size_bytes
+            )
+        return spec
+"""
+    return replace_once(text, old, new, "MLA: Triton physical-row alignment")
+
+
+def patch_kv_cache_interface_alignment(text: str) -> str:
+    """Backport the v0.30-compatible part of upstream #56254/#55528."""
+    marker = "block_stride_alignment: int | None = None"
+    if marker in text:
+        return text
+
+    old = """    storage_block_size: int | None = None
+    \"\"\"Token width used to view storage when it differs from the kernel block.\"\"\"
+"""
+    new = """    storage_block_size: int | None = None
+    \"\"\"Token width used to view storage when it differs from the kernel block.\"\"\"
+    block_stride_alignment: int | None = None
+    \"\"\"Required byte alignment between consecutive physical cache blocks.\"\"\"
+"""
+    text = replace_once(text, old, new, "KV spec: block stride field")
+
+    old = """        storage_block_size_set = set(spec.storage_block_size for spec in specs)
+        assert (
+"""
+    new = """        storage_block_size_set = set(spec.storage_block_size for spec in specs)
+        block_stride_alignment_set = {spec.block_stride_alignment for spec in specs}
+        assert (
+"""
+    text = replace_once(text, old, new, "KV spec: merge alignment set")
+
+    old = """            and len(index_group_leader_set) == 1
+            and len(storage_block_size_set) == 1
+        ), (
+"""
+    new = """            and len(index_group_leader_set) == 1
+            and len(storage_block_size_set) == 1
+            and len(block_stride_alignment_set) == 1
+        ), (
+"""
+    text = replace_once(text, old, new, "KV spec: merge alignment invariant")
+
+    old = """            cache_role=cache_role_set.pop(),
+            is_index_group_leader=index_group_leader_set.pop(),
+            storage_block_size=storage_block_size_set.pop(),
+            non_causal_multi_token_decode=any(
+"""
+    new = """            cache_role=cache_role_set.pop(),
+            is_index_group_leader=index_group_leader_set.pop(),
+            storage_block_size=storage_block_size_set.pop(),
+            block_stride_alignment=block_stride_alignment_set.pop(),
+            non_causal_multi_token_decode=any(
+"""
+    text = replace_once(text, old, new, "KV spec: preserve block alignment")
+    return text
+
+
+def patch_kv_cache_allocator_alignment(text: str) -> str:
+    """Round packed physical blocks to all MLA row-stride requirements."""
+    marker = "SM80_MLA_STRIDE_ALIGNMENTS"
+    if marker in text:
+        return text
+
+    old = """    if hot_page_sizes:
+        bytes_per_block = round_up(bytes_per_block, math.lcm(*hot_page_sizes))
+    return bytes_per_block
+"""
+    new = """    if hot_page_sizes:
+        bytes_per_block = round_up(bytes_per_block, math.lcm(*hot_page_sizes))
+
+    # SM80_MLA_STRIDE_ALIGNMENTS: upstream #56254/#55528.  A flat sparse-MLA
+    # reader addresses rows across physical blocks, so packed blocks must honor
+    # every layer's row-stride alignment requirement.
+    stride_alignments = [
+        spec.block_stride_alignment
+        for group in kv_cache_groups
+        for layer_name in group.layer_names
+        if isinstance(spec := _get_per_layer_spec(group, layer_name), MLAAttentionSpec)
+        and spec.block_stride_alignment
+    ]
+    if stride_alignments:
+        bytes_per_block = round_up(bytes_per_block, math.lcm(*stride_alignments))
+    return bytes_per_block
+"""
+    return replace_once(text, old, new, "KV allocator: MLA stride alignment")
+
+
 def patch_file(path: Path, fn) -> None:
     old = path.read_text(encoding="utf-8")
     new = fn(old)
@@ -536,6 +653,12 @@ def main() -> None:
     patch_file(root / "model_executor/layers/sparse_attn_indexer.py", patch_sparse_indexer)
     patch_file(root / "models/deepseek_v32/common/kernels.py", patch_deepseek_kernels)
     patch_file(root / "models/deepseek_v32/attention.py", patch_piecewise_kv_binding)
+    patch_file(
+        root / "model_executor/layers/attention/mla_attention.py",
+        patch_mla_stride_alignment,
+    )
+    patch_file(root / "v1/kv_cache_interface.py", patch_kv_cache_interface_alignment)
+    patch_file(root / "v1/core/kv_cache_utils.py", patch_kv_cache_allocator_alignment)
 
     print("GLM53_FULL_SM80_V030_PATCH=PASS")
 
