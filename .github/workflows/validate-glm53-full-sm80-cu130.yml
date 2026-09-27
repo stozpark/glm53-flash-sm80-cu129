@@ -214,6 +214,8 @@ jobs:
           MQA=vllm030/vllm/v1/attention/ops/mqa_logits_triton.py
 
           grep -q 'TRITON_MLA_SPARSE' "$REG"
+          grep -q 'supports_dense_mha_prefill = False' \
+            vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'AttentionBackendEnum.TRITON_MLA_SPARSE' "$CUDA"
           grep -q 'is_deep_gemm_supported' "$IDX"
           ! grep -q 'has_deep_gemm()' "$IDX"
