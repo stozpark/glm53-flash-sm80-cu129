@@ -177,6 +177,11 @@ def main() -> None:
         "SM80_PIECEWISE_KV_BINDING_FIX",
         "PIECEWISE graph KV binding",
     )
+    must(
+        patched_attention,
+        "topk_backend=self.indexer.indexer_op.topk_backend",
+        "upstream #58594 GLM-5.3 sparse top-k backend selection",
+    )
     must(patched_kernels, "SM80_SOFTWARE_E4M3FN", "software E4M3")
     must(patched_kernels, "index_q_fp8_storage", "byte-addressed index Q")
     must(patched_sparse, "_sm80_fp8_fp4_mqa_logits", "Triton indexer fallback")
