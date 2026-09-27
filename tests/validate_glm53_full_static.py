@@ -208,6 +208,40 @@ def main() -> None:
         "SM80 DeepGEMM hard gate",
     )
 
+    # #48285: SM80 paged-MQA graph capture requires a 1-D effective
+    # context length and the configured (constant) max_model_len.
+    must(
+        patched_sparse,
+        "context_lens = context_lens[:, -1].contiguous()",
+        "#48285 2-D decode context lengths",
+    )
+    must(
+        patched_sparse,
+        "max_model_len=max_model_len",
+        "#48285 fixed decode logits width",
+    )
+
+    # #47522: Marlin repacks FP8 weights to int32.  Chunked/prefix prefill
+    # must cast activations to params_dtype, never to the packed int32 weight.
+    mla_common = (
+        vllm / "model_executor/layers/attention/mla_attention.py"
+    ).read_text()
+    must(
+        mla_common,
+        "def _get_kv_b_proj_input_dtype",
+        "#47522 Marlin prefill dtype helper",
+    )
+    must(
+        mla_common,
+        "if weight_dtype == torch.int32:",
+        "#47522 packed Marlin weight handling",
+    )
+    must(
+        mla_common,
+        "return kv_b_proj.params_dtype",
+        "#47522 activation dtype recovery",
+    )
+
     mla_attention = (
         vllm / "model_executor/layers/attention/mla_attention.py"
     ).read_text()
