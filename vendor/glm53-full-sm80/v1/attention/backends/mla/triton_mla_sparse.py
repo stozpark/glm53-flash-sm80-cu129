@@ -43,6 +43,13 @@ class TritonMLASparseImpl(XPUMLASparseImpl):
     """Triton sparse-MLA impl with split-KV decode (3-7× faster than the
     single-pass XPU base for single-query decode on SM80 / SM121)."""
 
+    # Sparse-only implementation: MLAAttentionImpl.forward_mha() is not
+    # implemented by XPUMLASparseImpl.  Advertising dense-MHA prefill causes
+    # short/chunked prefills (notably max_num_batched_tokens <= index_topk) to
+    # fall through to the abstract base path and raise NotImplementedError.
+    # This mirrors upstream #51395 for the same sparse-only backend pattern.
+    supports_dense_mha_prefill = False
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._sm_count: int | None = None
