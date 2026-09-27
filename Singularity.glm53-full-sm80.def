@@ -40,5 +40,5 @@ PY
     grep -q SM80_MLA_STRIDE_ALIGNMENTS "${VLLM_ROOT}/v1/core/kv_cache_utils.py"
     ! grep -q _sm80_pp_topk_relay_buf "${VLLM_ROOT}/models/deepseek_v32/nvidia/model.py"
     grep -q _encode_e4m3fn_u8 "${VLLM_ROOT}/models/deepseek_v32/common/kernels.py"
-    test "$(cat /opt/glm53-full-sm80/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260923-5"
+    test "$(cat /opt/glm53-full-sm80/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260923-6"
     echo GLM53_FULL_SM80_STATIC=PASS
