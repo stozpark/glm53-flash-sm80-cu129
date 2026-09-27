@@ -26,6 +26,9 @@ SM80 sparse-MLA 구현은 vLLM PR **#47629**의 실제 A800 E2E 경로를
 
 - **#55173**: pre-SM89 CUDA용 portable E4M3 conversion
 - **#54851**: DeepSeek-V3.2/GLM-5.x PIECEWISE CUDA-graph KV binding fix
+- **#58594**: full GLM-5.3 sparse-indexer Top-K backend propagation (v0.30 이후 merge)
+- **#55528/#56254**: V3.2 sparse MLA packed physical-block stride alignment
+- **#51395**: sparse-only MLA backend가 dense-MHA prefill을 광고하면 안 된다는 capability fix
 - **#47644**: 구형 V1 model runner용 PP pinned-buffer fix이며 현재 V2 runner에는 사용하지 않음
 
 최신 vLLM main도 검토했지만, NVIDIA SM80용 `TRITON_MLA_SPARSE`가
@@ -97,7 +100,18 @@ indexer_rope_interleave = true
 
 를 사용합니다.
 
-### 4. PIECEWISE CUDA-graph KV binding
+### 4. 최신 GLM/DSA correctness backport
+
+v0.30 릴리스 이후 merge된 full GLM-5.3/DSA 수정도 필요한 부분만 backport합니다.
+
+- **#58594**: `sparse_attn_indexer()`에 실제 선택된 `topk_backend` 전달
+- **#55528/#56254 최소 backport**: `TRITON_MLA_SPARSE`의 packed BF16 MLA
+  physical block stride를 576-element row(1152 bytes) 경계에 정렬
+- **#51395 패턴**: Triton sparse backend는 dense `forward_mha()`를 구현하지
+  않으므로 `supports_dense_mha_prefill=False`를 명시하고 short/chunked
+  prefill도 지원되는 sparse-MQA 경로로 보냄
+
+### 5. PIECEWISE CUDA-graph KV binding
 
 vLLM #54851에서 보고된 DSA graph-capture 문제를 v0.30 코드에 맞춰
 backport했습니다.
@@ -149,7 +163,7 @@ layer 42가 full-indexer layer이므로 stage 간 Top-K relay가 필요 없습�
 TP=8
 PP=2
 PP partition=42,36
-CUDA graph=ON
+CUDA graph=ON (breakable CUDA graph 강제, Inductor compile OFF)
 prefix caching=ON
 block size=64
 main MLA KV=BF16
@@ -250,7 +264,7 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
   - layer 38 full, 39 shared, 42 full
   - dynamic E4M3 / weight block `[128,128]`
 - exact vLLM 0.30.0 source에 patch 적용
-- patch가 의도한 10개 source에만 한정되는지 scope 검사
+- patch가 의도한 source set에만 한정되는지 scope 검사
 - patch를 두 번 적용해도 byte-identical인지 idempotence 검사
 - `git diff --check` 및 모든 patched Python module compile
 - v0.30 model registry가 full GLM을 DeepSeek-V3.2 path로 라우팅하는지 검사
@@ -265,6 +279,12 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
 - active index-Q/index-K path에 native `tl.float8e4nv` cast가 남지 않았는지 검사
 - `record_logical_topk_ready()` compatibility hook
 - #54851-equivalent PIECEWISE KV-binding fix
+- #58594 Top-K backend propagation
+- #55528/#56254 packed MLA block-stride alignment
+- sparse-only backend의 dense-MHA prefill 비활성화 (#51395 패턴)
+- #48285의 2-D decode seq_lens / fixed logits width 회귀 방지
+- #47522의 Marlin packed-int32 chunked-prefill dtype 회귀 방지
+- breakable CUDA graph 강제 및 Inductor compile 비활성 경로 확인 (#49844 회피)
 - exact 64-token DSA page contract
 - 42/36 PP partition이 두 stage 모두 full-indexer layer에서 시작하는지 검사
 - obsolete V1 #47644 / custom PP Top-K relay / global BlockTable mutation 부재 확인
