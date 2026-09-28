@@ -292,6 +292,33 @@ def main() -> None:
         "allocator LCM alignment",
     )
 
+    # #58068 / #55569 risk audit: the stock sparse-indexer allocator uses
+    # variable-width FP32 prefill logits.  On A100 this is a fragmentation/
+    # headroom risk rather than the unified-memory failure reported on GB10.
+    # Lock the production arithmetic so a future scheduler/default change does
+    # not silently increase a single logits allocation beyond 512 MiB.
+    envs_text = (vllm / "envs.py").read_text()
+    must(
+        envs_text,
+        'os.getenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "512")',
+        "sparse indexer logits budget",
+    )
+    arg_utils = (vllm / "engine/arg_utils.py").read_text()
+    must(
+        arg_utils,
+        "UsageContext.OPENAI_API_SERVER: 2048",
+        "A100 server batched-token default",
+    )
+    max_model_len = 131072
+    max_batched_tokens = 2048
+    logits_budget_bytes = 512 * 1024 * 1024
+    # At 128K, each launch is capped at 1024 query rows x 131072 keys x fp32
+    # = 512 MiB, so one 2048-token scheduler chunk is split into two launches.
+    rows_per_launch = logits_budget_bytes // (max_model_len * 4)
+    assert rows_per_launch == 1024
+    assert (max_batched_tokens + rows_per_launch - 1) // rows_per_launch == 2
+    assert rows_per_launch * max_model_len * 4 == logits_budget_bytes
+
     q0 = patched_kernels.index("def _fp8_ue8m0_quantize")
     q1 = patched_kernels.index("def _fp8_quant_and_cache_write", q0)
     must_not(patched_kernels[q0:q1], "tl.float8e4nv", "index-K active quantizer")
