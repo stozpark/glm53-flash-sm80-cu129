@@ -11,6 +11,7 @@ from vllm.config.cache import CacheDType
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.platform_utils import num_compute_units
 from vllm.v1.attention.backend import AttentionBackend, AttentionCGSupport
+from vllm.v1.kv_cache_interface import KVCacheLayout
 from vllm.v1.attention.backends.mla.xpu_mla_sparse import (
     XPUMLASparseImpl,
     XPUMLASparseMetadata,
@@ -129,6 +130,14 @@ class TritonMLASparseBackend(AttentionBackend):
         "float16",
         "bfloat16",
     ]
+
+    @classmethod
+    def supported_kv_cache_layouts(cls) -> tuple[KVCacheLayout, ...]:
+        # V3.2 sparse MLA flattens each per-layer page into whole 576-element
+        # token rows. Keep the layer dimension outermost so a layer view never
+        # inherits a mixed MLA+indexer inter-layer block stride (#55431).
+        # LBHNC is the legacy HND layout known-good for V3.2 sparse MLA.
+        return (KVCacheLayout.LBHNC,)
 
     @staticmethod
     def get_name() -> str:
