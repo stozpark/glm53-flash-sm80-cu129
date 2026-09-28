@@ -1,101 +1,250 @@
-# GLM-5.3 SM80 patch audit
+# Full GLM-5.3 / SM80 correctness audit
 
-최종 source-level audit 기준: 2026-09-01
+Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 
-## 감사 기준
+- GPU target: A100/A800 80GB (SM80)
+- topology: 2 nodes x 8 GPUs, TP8 x PP2
+- base image: vLLM 0.30.0 / CUDA 13.0
+- architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
+- attention: DeepSeek-V3.2 DSA sparse MLA
+- port revision: `glm53-full-sm80-cu130-v030-r20260923-6`
+
+The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
+
+## Current model contract
+
+CI downloads the live `zai-org/GLM-5.3` config and safetensors index and
+verifies the assumptions used by this port.
+
+Verified:
 
 ```text
-Base vLLM:       487ecf187
-PR #47629:       064801dd2bc6ac2e265dc3fa1f5d803d71bde25d
-PR #54031:       b325d908656d05e2a650ec60666ccec6f4f3eb0c
-Ampere backport: 0ef4bff219c098d48cf16d3d63ebef329e9b74b0
+num_hidden_layers        = 78
+hidden_size              = 6144
+first_k_dense_replace    = 3
+n_routed_experts         = 256
+num_experts_per_tok      = 8
+q_lora_rank              = 2048
+kv_lora_rank             = 512
+qk_nope_head_dim         = 192
+qk_rope_head_dim         = 64
+index_n_heads            = 32
+index_head_dim           = 128
+index_topk               = 2048
+index_topk_freq          = 4
+indexer_rope_interleave  = true
+weight FP8 block         = 128 x 128
 ```
 
-## 발견하여 수정한 누락
-
-초기 저장소 작성 후 전체 재감사 과정에서 다음 누락을 발견했고 `main`에 반영했습니다.
-
-1. GLM-5.3 KPoolTail hybrid metadata에 token positions가 전달되지 않는 문제
-2. CUDA graph padded KPoolTail slot이 stale main-cache slot을 유지할 수 있는 문제
-3. KPoolTail mapping tensor가 persistent buffer가 아니어서 graph replay pointer 안정성이 깨질 수 있는 문제
-4. MTP warmup에서 padded `seq_lens` source를 active decode request 수만큼 slice하지 않는 문제
-5. KPoolTail cache group에 generic position-based slot mapping이 적용되는 문제
-6. MTP draft metadata에 positions가 전달되지 않는 문제
-7. Gitee/A800 KPool writer를 actual build dependency로 두고 있던 문제
-8. #47644 patch가 `glm53-flash-cu129@487ecf187`의 blocking-event 코드 형태와 맞지 않는 문제
-
-현재 실제 build path는 Gitee/A800 구현을 사용하지 않습니다. A800 snapshot은 비교용으로만 `source-backup`에 보관합니다.
-
-## source audit 결과
-
-GitHub Actions:
+The current checkpoint index reports:
 
 ```text
-Audit full patch chain against pinned base
-run: 33421750542
+checkpoint size          = 703.723 GiB
+average weight / 16 GPU  = 43.983 GiB
+BF16 MLA KV @128K PP0    = 5.906 GiB/rank
+BF16 MLA KV @128K PP1    = 5.062 GiB/rank
+```
+
+The actual stage weight distribution is not exactly the 16-GPU average; PP0
+contains 39 MoE layers plus the first three dense layers and is expected to be
+the heavier stage.
+
+## Applied correctness fixes
+
+### SM80 sparse-MLA / indexer
+
+- PR #47629 lineage: Triton sparse MLA and FP8 paged-MQA fallback for SM80.
+- Native DeepGEMM use is gated by actual architecture support.
+- Main MLA KV is BF16.
+- DSA index Q/K use software E4M3FN byte encoding on SM80.
+- Active index-Q/index-K paths contain no native `tl.float8e4nv` conversion.
+- sparse MLA and indexer pages use an exact 64-token block size.
+- physical sparse-MLA indices use int64 address arithmetic for long context.
+
+### Post-v0.30 fixes backported
+
+- **#58594**: propagate the layer-selected sparse Top-K backend into the direct
+  `sparse_attn_indexer()` call.
+- **#55528/#56254 minimal backport**: publish and honor physical block-stride
+  alignment for row-addressed BF16 sparse MLA.  For this backend the alignment
+  is one 576-element BF16 row = **1152 bytes**.
+- **#51395 capability pattern**: `TRITON_MLA_SPARSE` declares
+  `supports_dense_mha_prefill=False`; all prefills remain on the implemented
+  sparse-MQA path.
+- **#54851 equivalent**: keep real KV-cache views and persistent slot mappings
+  bound during PIECEWISE CUDA-graph capture.
+- **#48285 fixes**: normalize decode context lengths to the effective 1-D form
+  and keep decode logits width tied to configured `max_model_len`.
+- **#47522 protection**: chunked/prefix prefill recovers the activation dtype
+  from Marlin params rather than casting activations to packed int32 weights.
+- **#49844 workaround**: production launcher explicitly selects breakable CUDA
+  graphs and leaves Inductor compilation disabled for GlmMoeDsa PP serving.
+
+## PP correctness
+
+The default 39/39 split is not used.
+
+```text
+layer 38 = full indexer producer
+----- default PP boundary -----
+layer 39 = shared indexer consumer
+```
+
+Current production partition:
+
+```text
+VLLM_PP_LAYER_PARTITION=42,36
+PP0 = layers 0..41
+PP1 = layers 42..77
+```
+
+Layer 42 is a full-indexer producer, so PP1 generates its own logical Top-K and
+no cross-stage Top-K relay is required.
+
+The old custom Top-K relay is absent.
+
+## Explicitly reviewed but not backported
+
+### #47644
+
+Old V1 `gpu_model_runner.py` pinned-input-buffer race.
+
+The production path uses the v0.30 V2 runner
+`vllm/v1/worker/gpu/model_runner.py`, whose UVA buffer pool is sized from
+`max_concurrent_batches`.  #47644 is therefore not applied.
+
+### #51915
+
+The significant correctness issue in this PR is the AMD/AITER shuffled indexer
+cache layout.  CUDA's base indexer layout reports no shuffle; ROCm FP8/FNUZ and
+AITER BMM changes are not applicable to A100.
+
+### #54296
+
+Generic slot-mapping OOB guard for enabled cache groups whose block table can be
+narrower than raw token positions.
+
+Full GLM-5.3 in this port uses `tokens_per_state=1` and block size 64 for the
+main MLA/indexer caches.  Its block tables span the raw token sequence, so the
+reported narrow/compressed-group condition is not present.  The global
+BlockTable implementation is intentionally left untouched.
+
+### #58215
+
+DeepSelect sentinel remap fix.  DeepSelect requires SM100a/SM103a; A100
+`auto` Top-K resolves through the CUDA persistent/per-row path, so this fix is
+outside the active SM80 execution path.
+
+### #58450
+
+GLM metadata preparation performance optimization.  It is not a correctness
+requirement for this port.
+
+### #49845
+
+Upstream auto block-size selection fix.  The production launcher already pins
+`--block-size 64`, which is supported by both the DSA indexer and
+`TRITON_MLA_SPARSE`.
+
+## Open memory-risk item: #58068
+
+#58068 is **not a demonstrated SM80 correctness failure** and is not
+backported.  It addresses caching-allocator growth caused by changing prefill
+logits widths.  Its published E2E evidence is GLM-5.3-Flash on GB10 unified
+memory with the DeepGEMM path.
+
+The SM80 Triton prefill fallback also allocates an `[M, N]` fp32 logits tensor,
+so the allocation-shape pattern is relevant even though the kernel is
+different.
+
+For the production defaults:
+
+```text
+max_model_len            = 131072
+max_num_batched_tokens   = 2048
+max logits budget        = 512 MiB
+compress_ratio           = 1
+```
+
+a single long prefill reaches the 512 MiB per-launch cap at ~64K context and is
+sub-chunked beyond that.  Before the cap, progressively larger allocations can
+create caching-allocator fragmentation.  vLLM's profile run accounts for the
+**512 MiB peak allocation** when sizing KV memory, but the profiling context
+calls `empty_cache()` afterward and therefore cannot prove that runtime
+fragmentation from a sequence of differently-sized allocations is harmless.
+
+This is therefore a **runtime memory telemetry item**, not a source blocker.
+Do not claim 128K production memory stability until it has been measured on the
+actual A100 deployment.
+
+## Source/CI validation
+
+Latest audited workflow:
+
+```text
+Validate GLM-5.3 full SM80 CUDA13
+run: 36307384382
 result: SUCCESS
 ```
 
-검증한 항목:
+The workflow performs:
 
-- `test_patch_runtime_unit.py`: PASS
-- `test_patch_glm53_tail_unit.py`: PASS
-- self-contained `source-backup` checkout: PASS
-- exact `487ecf187` touched-source subset reconstruction: PASS
-- `patch_47644_compat.py`: PASS
-- `patch_runtime.py`: PASS
-- `patch_glm53_tail.py`: PASS
-- patched Python `py_compile`: PASS
-- `verify_static.py`: PASS
-- backup SHA256 verification: PASS
+1. live GLM-5.3 config/index validation;
+2. checkout of exact vLLM `v0.30.0`;
+3. complete patch application;
+4. touched-file scope check;
+5. second patch application and byte-identical idempotence check;
+6. `git diff --check`;
+7. Python compile of every modified/installed module;
+8. static semantic validation;
+9. E4M3FN numerical reference validation:
+   - 100,514 random/edge float32 values,
+   - all 65,536 FP16 bit patterns,
+   - all 65,536 BF16 bit patterns;
+10. active-path native-FP8 exclusion checks;
+11. long-context int64 address checks;
+12. production launcher/SIF revision checks.
 
-즉 **현재 patch chain은 고정한 base source에 실제로 적용 가능하고 syntax/static invariant가 모두 통과함을 확인했습니다.**
-
-## source backup 결과
-
-`source-backup` branch snapshot workflow:
-
-```text
-Snapshot pinned upstream sources
-run: 33421255994
-result: SUCCESS
-```
-
-보관:
-
-- pinned build vendor source
-- base `487ecf187` source files
-- Ampere backport reference files
-- Gitee A800 repository snapshot
-- SHA256 checksums
-
-## 아직 검증되지 않은 것
-
-이 환경에는 A100과 실제 `glm53-flash-cu129` SIF runtime이 없으므로 아래는 아직 PASS라고 주장하지 않습니다.
-
-- 실제 Singularity/Apptainer SIF build
-- A100 SM80에서 Triton compilation
-- #54031 NoPE-512 GPU numerical reference test
-- SM80 FP8 MQA GPU numerical reference test
-- 원본 GLM-5.3 FP8 checkpoint TP8 loading
-- 128K/512K long-context correctness
-- Claude Code tool-call / WebFetch correctness
-- MTP3 acceptance/correctness
-- prefix-cache correctness
-- TP8×PP2 runtime correctness
-
-따라서 release gate는 다음입니다.
+Observed markers from the successful run:
 
 ```text
-SOURCE_AUDIT = PASS
-GPU/SIF_AUDIT = PENDING
-FULL_SERVING_AUDIT = PENDING
+GLM53_CURRENT_MODEL_CONTRACT=PASS
+GLM53_FULL_SM80_V030_PATCH=PASS
+SM80_PATCH_SCOPE=PASS
+SM80_PATCH_IDEMPOTENT=PASS
+GLM53_FULL_SM80_STATIC_SEMANTICS=PASS
+SM80_E4M3FN_REFERENCE=PASS
+SM80_FP8_ACTIVE_PATHS=PASS
+GLM53_FULL_SM80_V030_STATIC=PASS
+CUDA13_PROFILE=PASS
 ```
 
-A100 머신에서는 먼저:
+## What cannot be proven without A100 hardware
 
-```bash
-bash ./verify_sif_gpu.sh /path/to/glm53-flash-sm80-cu129.sif
+The source audit cannot validate:
+
+- CUDA/Triton JIT on SM80;
+- numerical parity of the five GPU smoke kernels on actual A100;
+- Marlin checkpoint load/repack peak memory;
+- NCCL/Gloo initialization across the two physical nodes;
+- TP8 x PP2 full checkpoint initialization;
+- CUDA-graph capture/replay on all workers;
+- prefix-cache behavior with real requests;
+- runtime allocator fragmentation during 64K/128K prefills;
+- end-to-end generated-token correctness.
+
+The production launcher runs the A100 GPU smoke on each node before starting
+the full server and rejects a stale SIF by `PORT_REVISION`.
+
+## Release gate
+
+```text
+SOURCE / CONFIG / CPU REFERENCE AUDIT = PASS
+SIF STATIC CONTRACT                 = PASS
+A100 GPU KERNEL AUDIT               = PENDING HARDWARE
+16-GPU FULL SERVING AUDIT           = PENDING HARDWARE
+128K MEMORY-STABILITY AUDIT         = PENDING HARDWARE
 ```
 
-을 통과한 뒤 `PROFILE=initial`로 full serving 검증을 진행해야 합니다.
+The next meaningful evidence must therefore come from the target A100 nodes,
+not from additional source-only assertions.
