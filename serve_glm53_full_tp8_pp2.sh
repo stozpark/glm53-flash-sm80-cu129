@@ -43,7 +43,7 @@ BLOCK_SIZE="${BLOCK_SIZE:-64}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-1}"
-EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260923-6"
+EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260923-7"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -143,7 +143,7 @@ from pathlib import Path
 
 assert version("vllm") == "0.30.0", version("vllm")
 revision = Path("/opt/glm53-full-sm80/PORT_REVISION").read_text().strip()
-assert revision == "glm53-full-sm80-cu130-v030-r20260923-6", revision
+assert revision == "glm53-full-sm80-cu130-v030-r20260923-7", revision
 root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 if not root.exists():
     import importlib.util
@@ -263,6 +263,10 @@ run_server() {
     # explicitly so a host environment cannot re-enable the unsafe
     # Inductor+PP graph combination reported in #49844.
     --env VLLM_USE_BREAKABLE_CUDAGRAPH=1
+    # V3.2 sparse MLA requires a layer-compact cache layout.  Pin the
+    # known-good legacy HND layout so an inherited host BLHNC setting
+    # cannot trigger mixed MLA/indexer block-stride addressing (#55431).
+    --env VLLM_KV_CACHE_LAYOUT=LBHNC
   )
 
   # Only pin NCCL/Gloo to an interface when the user asks for it. vLLM's
