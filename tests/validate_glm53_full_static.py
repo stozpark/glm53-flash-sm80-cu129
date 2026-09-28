@@ -69,6 +69,7 @@ def main() -> None:
         "--kv-cache-dtype bfloat16",
         '"backend":"TRITON_MLA_SPARSE"',
         "--env VLLM_USE_BREAKABLE_CUDAGRAPH=1",
+        "--env VLLM_KV_CACHE_LAYOUT=LBHNC",
         "--linear-backend marlin",
         "--moe-backend marlin",
         "--tool-call-parser glm47",
@@ -116,6 +117,11 @@ def main() -> None:
     # pages, matching DeepseekV32IndexerBackend in v0.30.
     must(backend, "return capability == DeviceCapability(8, 0)", "backend SM80 gate")
     must(backend, "return [64]", "backend block size")
+    must(
+        backend,
+        "return (KVCacheLayout.LBHNC,)",
+        "safe V3.2 layer-compact KV layout",
+    )
     must(backend, "def record_logical_topk_ready", "v0.30 DSA API")
     must(
         backend,
