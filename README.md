@@ -166,6 +166,7 @@ PP partition=42,36
 CUDA graph=ON (breakable CUDA graph 강제, Inductor compile OFF)
 prefix caching=ON
 block size=64
+KV cache layout=LBHNC (layer-compact HND; #55431 guard)
 main MLA KV=BF16
 Linear=Marlin
 MoE=Marlin
