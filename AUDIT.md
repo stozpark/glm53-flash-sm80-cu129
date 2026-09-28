@@ -7,7 +7,7 @@ Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 - base image: vLLM 0.30.0 / CUDA 13.0
 - architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
 - attention: DeepSeek-V3.2 DSA sparse MLA
-- port revision: `glm53-full-sm80-cu130-v030-r20260923-6`
+- port revision: `glm53-full-sm80-cu130-v030-r20260923-7`
 
 The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
 
@@ -118,6 +118,14 @@ The production path uses the v0.30 V2 runner
 The significant correctness issue in this PR is the AMD/AITER shuffled indexer
 cache layout.  CUDA's base indexer layout reports no shuffle; ROCm FP8/FNUZ and
 AITER BMM changes are not applicable to A100.
+
+### #55431
+
+An explicit block-outermost `BLHNC` layout can make V3.2 sparse MLA inherit
+a mixed MLA+indexer physical block stride that is not an integer number of
+576-element MLA rows.  The SM80 backend now declares only the known-good
+layer-compact `LBHNC` (legacy HND) layout, and the production launcher pins
+`VLLM_KV_CACHE_LAYOUT=LBHNC` so a host environment cannot override it.
 
 ### #54296
 
