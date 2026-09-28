@@ -292,6 +292,11 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
 - production launcher: native MP / graph ON / prefix cache ON / SIF revision preflight
 - shell syntax
 
+- 128K sparse-indexer prefill logits budget
+  - v0.30 A100 server default: 2048 batched tokens
+  - logits allocation cap: 512 MiB
+  - 128K context: at most 1024 rows/launch, therefore two <=512 MiB launches per 2048-token chunk
+
 이 CI가 확인할 수 없는 것은 **실제 SM80 GPU 실행 자체**입니다. 따라서 남은
 하드웨어 의존 검증은 A100에서의 Triton JIT/numerical smoke, 16-GPU NCCL/PP
 initialization, Marlin weight load/repack peak memory, CUDA-graph replay 및 실제
