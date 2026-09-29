@@ -34,11 +34,14 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 
 # Production defaults. Keep CUDA graphs and prefix caching enabled from the
-# first deployment; vLLM's A100 scheduler defaults are retained unless the
-# operator explicitly overrides them.
+# first deployment. GLM-5.3 on A100 80GB can OOM while profiling the default
+# 128-request CUDA-graph envelope even before KV-cache allocation. Keep the
+# scheduler default concurrency, but cap graph capture at 32 requests; larger
+# batches transparently use the non-captured path.
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
+MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"
 BLOCK_SIZE="${BLOCK_SIZE:-64}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
@@ -129,6 +132,7 @@ preflight() {
   echo "block_size=${BLOCK_SIZE}"
   echo "max_num_seqs=${MAX_NUM_SEQS:-vllm-default}"
   echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS:-vllm-default}"
+  echo "max_cudagraph_capture_size=${MAX_CUDAGRAPH_CAPTURE_SIZE}"
   echo "prefix_caching=${ENABLE_PREFIX_CACHING}"
   echo "enforce_eager=${ENFORCE_EAGER}"
   echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
@@ -216,11 +220,12 @@ build_args() {
     --linear-backend marlin
     --moe-backend marlin
 
-    # Production A100 baseline.  Let vLLM select its tuned A100 scheduler
-    # defaults (OpenAI server: 2048 batched tokens / 256 seqs in v0.30.0)
-    # unless explicit overrides are supplied.
+    # Production A100 baseline. vLLM v0.30.0 OpenAI-server defaults are
+    # 2048 batched tokens / 128 seqs. Limit only CUDA-graph capture memory;
+    # scheduler concurrency remains at the vLLM default unless overridden.
     --max-model-len "${MAX_MODEL_LEN}"
     --block-size "${BLOCK_SIZE}"
+    --max-cudagraph-capture-size "${MAX_CUDAGRAPH_CAPTURE_SIZE}"
   )
 
   [[ -n "${MAX_NUM_SEQS}" ]] && VLLM_ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
