@@ -74,7 +74,6 @@ the heavier stage.
 - **#51395 capability pattern**: `TRITON_MLA_SPARSE` declares
   `supports_dense_mha_prefill=False`; all prefills remain on the implemented
   sparse-MQA path.
-  bound during PIECEWISE CUDA-graph capture.
 - **#48285 fixes**: normalize decode context lengths to the effective 1-D form
   and keep decode logits width tied to configured `max_model_len`.
 - **#47522 protection**: chunked/prefix prefill recovers the activation dtype
@@ -158,9 +157,10 @@ requirement for this port.
 
 ### #49845
 
-Upstream auto block-size selection fix.  The production launcher already pins
-`--block-size 64`, which is supported by both the DSA indexer and
-`TRITON_MLA_SPARSE`.
+Upstream auto block-size selection fix. The r11 launcher does not pin
+`--block-size`; the selected DSA/indexer backend advertises its exact
+64-token contract and vLLM resolves it automatically. Target-hardware logs
+confirm `DEEPSEEK_V32_INDEXER` selected block size 64.
 
 ## Observed A100 fused-Q SM80 compile failure
 
@@ -285,14 +285,9 @@ for verification. Those files do not alter vLLM runtime behavior.
 
 ## Source/CI validation
 
-Latest audited workflow:
-
-```text
-Validate GLM-5.3 full SM80 CUDA13
-run: 36526372977
-result: SUCCESS
-head: a4fab6a2af5335319137208ac8774e44ebb72542
-```
+Latest audited workflow is tracked at the branch HEAD; CI must pass exact
+vLLM 0.30 patch application, idempotence, semantic checks, and launcher/SIF
+contracts before the revision is considered buildable.
 
 The workflow performs:
 
