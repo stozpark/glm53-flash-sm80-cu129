@@ -68,7 +68,7 @@ def main() -> None:
         'ENFORCE_EAGER="${ENFORCE_EAGER:-0}"',
         'MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"',
         'CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"',
-        '--compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"',
+        "--compilation-config",
         "--kv-cache-dtype bfloat16",
         '"backend":"TRITON_MLA_SPARSE"',
         "--env VLLM_USE_BREAKABLE_CUDAGRAPH=1",
