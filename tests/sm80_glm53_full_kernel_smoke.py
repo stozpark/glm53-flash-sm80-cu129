@@ -179,7 +179,7 @@ def main() -> None:
     assert torch.isfinite(k_scales[:n]).all() and torch.all(k_scales[:n] > 0)
 
     ik_ref = layer_norm_ref(index_k, index_kw, index_kb)
-    ik_ref = rope_ref(ik_ref, pos, cos_sin, interleave=False)
+    ik_ref = rope_ref(ik_ref, pos, cos_sin, interleave=True)
     k_ref, k_scale_ref = ue8m0_ref(ik_ref)
     assert fp8_max_ulp(k_values[:n], k_ref) <= 1, "index-K FP8 differs by >1 ULP"
     torch.testing.assert_close(k_scales[:n], k_scale_ref, rtol=0, atol=0)
@@ -222,7 +222,7 @@ def main() -> None:
         index_q.float(),
         pos[:, None].expand(n, INDEX_HEADS),
         cos_sin,
-        interleave=False,
+        interleave=True,
     )
     iq_ref_fp8, iq_scale_ref = ue8m0_ref(iq_ref)
     assert fp8_max_ulp(iq_fp8, iq_ref_fp8) <= 1, "index-Q FP8 differs by >1 ULP"
