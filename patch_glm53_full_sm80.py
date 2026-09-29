@@ -196,7 +196,11 @@ def _fp8_ue8m0_quantize(vals):
             device=q_pe.device,
         )
         mqa_q_fp8 = mqa_q_fp8_storage.view(torch.float8_e4m3fn)
-        q_pe_out = mqa_q_fp8
+        # QUANTIZE_MQA=True compiles out the BF16 q_pe_out store path. Passing
+        # the FP8 view here would still put pointer<fp8e4nv> in the Triton
+        # kernel signature, which SM80 rejects before compiling the body.
+        # Use an unused BF16 pointer with valid q_pe strides instead.
+        q_pe_out = q_pe
         mqa_q = mqa_q_fp8
     else:
         # bf16 path: only the RoPE'd q_pe is produced; ql_nope used directly.
@@ -235,6 +239,8 @@ def _fp8_ue8m0_quantize(vals):
     fq1 = text.index("def fused_q(", fq0)
     if "tl.float8e4nv" in text[fq0:fq1]:
         raise RuntimeError("deepseek kernels: native fp8 cast remains in fused_q kernel")
+    if "q_pe_out = mqa_q_fp8" in text:
+        raise RuntimeError("deepseek kernels: FP8 q_pe_out would leak into Triton signature")
     return text
 
 def patch_sparse_indexer(text: str) -> str:
