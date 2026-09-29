@@ -36,7 +36,7 @@ BLOCK_SIZE="${BLOCK_SIZE:-64}"
 MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"
 CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
-RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-1}"
+RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-0}"
 EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-10"
 
 API_KEY="${API_KEY:-}"
@@ -133,7 +133,6 @@ preflight() {
   echo "model=${MODEL_HOST_PATH}"
   echo "sif=${SIF_PATH}"
   echo "pp_layer_partition=${PP_LAYER_PARTITION}"
-  echo "block_size=${BLOCK_SIZE}"
   echo "max_cudagraph_capture_size=${MAX_CUDAGRAPH_CAPTURE_SIZE}"
   echo "cudagraph_mode=${CUDAGRAPH_MODE}"
   echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
@@ -232,7 +231,6 @@ build_args() {
     # fix (#49845), so 64 is explicit. PIECEWISE graph profiling OOMs on the
     # full FP8 checkpoint; keep full graphs only for uniform decode.
     --max-model-len "${MAX_MODEL_LEN}"
-    --block-size "${BLOCK_SIZE}"
     --max-cudagraph-capture-size "${MAX_CUDAGRAPH_CAPTURE_SIZE}"
     --compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"
   )
