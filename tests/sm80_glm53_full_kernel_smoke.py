@@ -5,6 +5,7 @@ Run this INSIDE the built SIF before loading the 753B checkpoint.  It forces
 Triton JIT compilation of the exact A100-sensitive building blocks:
   * deepseek_v32 fused_norm_rope index-K FP8 cache writer
   * deepseek_v32 fused_q index-Q FP8 writer
+  * deepseek_v32 fused_q MQA FP8 pack (the SM80 fp8e4nv failure path)
   * Triton DSA prefill MQA logits
   * Triton DSA paged-decode MQA logits
   * Triton sparse MLA (576 -> 512)
@@ -234,6 +235,49 @@ def main() -> None:
     )
     torch.testing.assert_close(iw_out, iw_ref, rtol=1e-3, atol=1e-3)
     print("SM80_FUSED_Q_INDEX_Q=PASS")
+
+    # ------------------------------------------------------------------
+    # 2b) Force the generic FP8 MQA-pack branch. The production SM80 backend
+    # uses BF16 MLA KV, but this catches any remaining native fp8e4nv cast in
+    # fused_q before a full 743B model launch.
+    # ------------------------------------------------------------------
+    iq_fp8_q, iw_out_q, mqa_q_fp8 = K.fused_q(
+        pos,
+        q_pe,
+        cos_sin,
+        index_q,
+        cos_sin,
+        ql_nope,
+        q_scale,
+        index_w,
+        INDEX_HEAD_DIM**-0.5,
+        INDEX_HEADS**-0.5,
+        has_indexer=True,
+        index_rope_interleave=True,
+        quantize_mqa=True,
+    )
+    torch.cuda.synchronize()
+    assert iq_fp8_q.dtype == FP8
+    assert mqa_q_fp8.dtype == FP8
+    assert mqa_q_fp8.shape == (n, 8, KV_LORA + ROPE_DIM)
+    assert fp8_max_ulp(iq_fp8_q, iq_ref_fp8) <= 1
+    torch.testing.assert_close(iw_out_q, iw_ref, rtol=1e-3, atol=1e-3)
+
+    q_pe_ref = rope_ref(
+        q_pe.float(),
+        pos[:, None].expand(n, q_pe.shape[1]),
+        cos_sin,
+        interleave=True,
+    )
+    mqa_ref = torch.cat(
+        [ql_nope.float(), q_pe_ref],
+        dim=-1,
+    )
+    mqa_ref = (mqa_ref / q_scale.item()).to(FP8)
+    assert fp8_max_ulp(mqa_q_fp8, mqa_ref) <= 1, (
+        "MQA packed FP8 differs by >1 ULP"
+    )
+    print("SM80_FUSED_Q_MQA_FP8_PACK=PASS")
 
     # ------------------------------------------------------------------
     # 3) DSA prefill MQA fallback.
