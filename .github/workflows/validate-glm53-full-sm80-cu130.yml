@@ -119,7 +119,6 @@ jobs:
               "vllm/model_executor/layers/attention/mla_attention.py",
               "vllm/v1/core/kv_cache_utils.py",
               "vllm/v1/kv_cache_interface.py",
-              "vllm/platforms/cuda.py",
               "vllm/v1/attention/backends/mla/indexer.py",
               "vllm/v1/attention/backends/registry.py",
               "vllm/v1/attention/backends/mla/triton_mla_sparse.py",
@@ -128,6 +127,9 @@ jobs:
               "vllm/v1/attention/ops/triton_mla_sparse_kernel.py",
           }
           assert got == expected, f"unexpected patch scope: got={sorted(got)}"
+          patcher = Path("port/patch_glm53_full_sm80.py").read_text()
+          assert "def patch_cuda(" not in patcher
+          assert "SM80_PIECEWISE_KV_BINDING_FIX" not in patcher
           print("SM80_PATCH_SCOPE=PASS")
           PY
 
@@ -136,7 +138,6 @@ jobs:
             -path '*/sparse_attn_indexer.py' -o \
             -path '*/deepseek_v32/attention.py' -o \
             -path '*/deepseek_v32/common/kernels.py' -o \
-            -path '*/platforms/cuda.py' -o \
             -path '*/backends/mla/indexer.py' -o \
             -path '*/backends/registry.py' -o \
             -path '*/backends/mla/triton_mla_sparse.py' -o \
@@ -153,7 +154,6 @@ jobs:
             -path '*/sparse_attn_indexer.py' -o \
             -path '*/deepseek_v32/attention.py' -o \
             -path '*/deepseek_v32/common/kernels.py' -o \
-            -path '*/platforms/cuda.py' -o \
             -path '*/backends/mla/indexer.py' -o \
             -path '*/backends/registry.py' -o \
             -path '*/backends/mla/triton_mla_sparse.py' -o \
@@ -170,7 +170,6 @@ jobs:
           set -euxo pipefail
           python3 -m py_compile \
             vllm030/vllm/v1/attention/backends/registry.py \
-            vllm030/vllm/platforms/cuda.py \
             vllm030/vllm/v1/attention/backends/mla/indexer.py \
             vllm030/vllm/model_executor/layers/sparse_attn_indexer.py \
             vllm030/vllm/models/deepseek_v32/common/kernels.py \
@@ -201,7 +200,6 @@ jobs:
         run: |
           set -euxo pipefail
           REG=vllm030/vllm/v1/attention/backends/registry.py
-          CUDA=vllm030/vllm/platforms/cuda.py
           IDX=vllm030/vllm/v1/attention/backends/mla/indexer.py
           SIDX=vllm030/vllm/model_executor/layers/sparse_attn_indexer.py
           KERN=vllm030/vllm/models/deepseek_v32/common/kernels.py
@@ -218,7 +216,6 @@ jobs:
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'return (KVCacheLayout.LBHNC,)' \
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
-          grep -q 'AttentionBackendEnum.TRITON_MLA_SPARSE' "$CUDA"
           grep -q 'is_deep_gemm_supported' "$IDX"
           ! grep -q 'has_deep_gemm()' "$IDX"
 
@@ -232,9 +229,8 @@ jobs:
           grep -q '_encode_e4m3fn_u8' "$KERN"
           grep -q 'index_q_fp8_storage' "$KERN"
 
-          # The unconditional index-Q quantizer and fused-Q body must contain
-          # no native Ampere-incompatible conversion. Other constexpr-dead
-          # FP8 main-KV/NVFP4 branches may remain because baseline KV is BF16.
+          # Only the index-Q/K quantizer is active with BF16 MLA KV.
+          # Stock QUANTIZE_MQA=True branches remain untouched and unreachable.
           python3 - <<'PY'
           from pathlib import Path
           p=Path("vllm030/vllm/models/deepseek_v32/common/kernels.py")
@@ -242,15 +238,12 @@ jobs:
           a=s.index("def _fp8_ue8m0_quantize")
           b=s.index("def _fp8_quant_and_cache_write", a)
           assert "tl.float8e4nv" not in s[a:b], "native FP8 remains in index quantizer"
-          a=s.index("def _fused_q_kernel")
-          b=s.index("def fused_q(", a)
-          assert ".to(tl.float8e4nv)" not in s[a:b], "native FP8 remains in fused_q"
+          assert "index_q_fp8_storage" in s
           print("SM80_FP8_ACTIVE_PATHS=PASS")
           PY
 
           grep -q 'def record_logical_topk_ready' \
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
-          grep -q 'SM80_PIECEWISE_KV_BINDING_FIX' "$ATTN"
           grep -q 'topk_backend=self.indexer.indexer_op.topk_backend' "$ATTN"
           grep -q 'SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT' "$MLAC"
           grep -q 'block_stride_alignment: int | None = None' "$KVI"
@@ -280,19 +273,22 @@ jobs:
           bash -n port/serve_glm53_full_tp16.sh
           grep -q 'sm80_glm53_full_kernel_smoke.py' port/Singularity.glm53-full-sm80.def
           grep -q 'PORT_REVISION /opt/glm53-full-sm80/PORT_REVISION' port/Singularity.glm53-full-sm80.def
-          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260929-9"
+          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260929-10"
           grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'BLOCK_SIZE:-64' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'ENABLE_PREFIX_CACHING:-1' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'ENFORCE_EAGER:-0' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'MAX_CUDAGRAPH_CAPTURE_SIZE:-32' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'CUDAGRAPH_MODE:-FULL_DECODE_ONLY' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--max-cudagraph-capture-size' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--compilation-config' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'RUN_GPU_SMOKE:-1' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'VLLM_KV_CACHE_LAYOUT=LBHNC' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-9"' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--kv-cache-dtype' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--linear-backend' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--moe-backend' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--enable-prefix-caching' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q 'VLLM_USE_BREAKABLE_CUDAGRAPH' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q 'VLLM_KV_CACHE_LAYOUT' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-10"' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'return capability == DeviceCapability(8, 0)' \
             port/vendor/glm53-full-sm80/v1/attention/backends/mla/triton_mla_sparse.py
