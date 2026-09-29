@@ -7,7 +7,7 @@ Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 - base image: vLLM 0.30.0 / CUDA 13.0
 - architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
 - attention: DeepSeek-V3.2 DSA sparse MLA
-- port revision: `glm53-full-sm80-cu130-v030-r20260923-7`
+- port revision: `glm53-full-sm80-cu130-v030-r20260929-9`
 
 The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
 
@@ -79,6 +79,8 @@ the heavier stage.
   from Marlin params rather than casting activations to packed int32 weights.
 - **#49844 workaround**: production launcher explicitly selects breakable CUDA
   graphs and leaves Inductor compilation disabled for GlmMoeDsa PP serving.
+- **#52500**: use the padded pack/unpack path for ragged warmup/mixed decode
+  batches even when metadata incorrectly reports `requires_padding=False`.
 
 ## PP correctness
 
@@ -191,8 +193,9 @@ Latest audited workflow:
 
 ```text
 Validate GLM-5.3 full SM80 CUDA13
-run: 36307384382
+run: 36526372977
 result: SUCCESS
+head: a4fab6a2af5335319137208ac8774e44ebb72542
 ```
 
 The workflow performs:
@@ -236,7 +239,9 @@ The source audit cannot validate:
 - Marlin checkpoint load/repack peak memory;
 - NCCL/Gloo initialization across the two physical nodes;
 - TP8 x PP2 full checkpoint initialization;
-- CUDA-graph capture/replay on all workers;
+- CUDA-graph capture/replay on all workers (the first target-hardware attempt
+  OOMed during `profile_cudagraph_memory()` with the default graph envelope;
+  the production launcher now caps `--max-cudagraph-capture-size` at 32);
 - prefix-cache behavior with real requests;
 - runtime allocator fragmentation during 64K/128K prefills;
 - end-to-end generated-token correctness.
