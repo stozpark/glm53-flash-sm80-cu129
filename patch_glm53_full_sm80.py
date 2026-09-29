@@ -544,11 +544,10 @@ def main() -> None:
         print(f"[glm53-full-sm80-v030] installed {dst}")
 
     patch_file(root / "v1/attention/backends/registry.py", patch_registry)
-    patch_file(root / "platforms/cuda.py", patch_cuda)
     patch_file(root / "v1/attention/backends/mla/indexer.py", patch_indexer_metadata)
     patch_file(root / "model_executor/layers/sparse_attn_indexer.py", patch_sparse_indexer)
     patch_file(root / "models/deepseek_v32/common/kernels.py", patch_deepseek_kernels)
-    patch_file(root / "models/deepseek_v32/attention.py", patch_piecewise_kv_binding)
+    patch_file(root / "models/deepseek_v32/attention.py", patch_topk_backend)
     patch_file(
         root / "model_executor/layers/attention/mla_attention.py",
         patch_mla_stride_alignment,
