@@ -225,12 +225,12 @@ jobs:
           grep -q 'using SM80 Triton DSA indexer fallback' "$SIDX"
           ! grep -q 'Sparse Attention Indexer CUDA op requires DeepGEMM' "$SIDX"
 
-          grep -q 'SM80_SOFTWARE_E4M3FN' "$KERN"
+          grep -q 'SM80_SOFTWARE_E4M3FN_MQA' "$KERN"
           grep -q '_encode_e4m3fn_u8' "$KERN"
           grep -q 'index_q_fp8_storage' "$KERN"
+          grep -q 'mqa_q_fp8_storage' "$KERN"
+          grep -q 'supports_quant_query_input = False'             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
 
-          # Only the index-Q/K quantizer is active with BF16 MLA KV.
-          # Stock QUANTIZE_MQA=True branches remain untouched and unreachable.
           python3 - <<'PY'
           from pathlib import Path
           p=Path("vllm030/vllm/models/deepseek_v32/common/kernels.py")
@@ -238,7 +238,11 @@ jobs:
           a=s.index("def _fp8_ue8m0_quantize")
           b=s.index("def _fp8_quant_and_cache_write", a)
           assert "tl.float8e4nv" not in s[a:b], "native FP8 remains in index quantizer"
+          a=s.index("def _fused_q_kernel")
+          b=s.index("def fused_q(", a)
+          assert "tl.float8e4nv" not in s[a:b], "native FP8 remains in fused_q"
           assert "index_q_fp8_storage" in s
+          assert "mqa_q_fp8_storage" in s
           print("SM80_FP8_ACTIVE_PATHS=PASS")
           PY
 
@@ -273,24 +277,25 @@ jobs:
           bash -n port/serve_glm53_full_tp16.sh
           grep -q 'sm80_glm53_full_kernel_smoke.py' port/Singularity.glm53-full-sm80.def
           grep -q 'PORT_REVISION /opt/glm53-full-sm80/PORT_REVISION' port/Singularity.glm53-full-sm80.def
-          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260929-10"
+          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260929-11"
           grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'MAX_CUDAGRAPH_CAPTURE_SIZE:-32' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'CUDAGRAPH_MODE:-FULL_DECODE_ONLY' port/serve_glm53_full_tp8_pp2.sh
-          grep -q -- '--max-cudagraph-capture-size' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'CUDAGRAPH_MODE:-NONE' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--max-cudagraph-capture-size' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--compilation-config' port/serve_glm53_full_tp8_pp2.sh
+          grep -q -- '--kv-cache-dtype bfloat16' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'RUN_GPU_SMOKE:-0' port/serve_glm53_full_tp8_pp2.sh
-          ! grep -q -- '--kv-cache-dtype' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--linear-backend' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--moe-backend' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--enable-prefix-caching' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--env VLLM_USE_BREAKABLE_CUDAGRAPH' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--env VLLM_KV_CACHE_LAYOUT' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-10"' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-11"' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'return capability == DeviceCapability(8, 0)' \
             port/vendor/glm53-full-sm80/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'index_rope_interleave=True' port/tests/sm80_glm53_full_kernel_smoke.py
+          grep -q 'quantize_mqa=True' port/tests/sm80_glm53_full_kernel_smoke.py
+          grep -q 'SM80_FUSED_Q_MQA_FP8_PACK=PASS' port/tests/sm80_glm53_full_kernel_smoke.py
           ! grep -q 'interleave=False' port/tests/sm80_glm53_full_kernel_smoke.py
           echo CUDA13_PROFILE=PASS
