@@ -72,6 +72,7 @@ def patch_deepseek_kernels(text: str) -> str:
 
     legacy_sm80 = "SM80_SOFTWARE_E4M3FN" in text
     import_anchor = "from vllm.utils.torch_utils import is_quantized_kv_cache\n"
+
     if not legacy_sm80:
         text = replace_once(
             text,
@@ -82,54 +83,49 @@ def patch_deepseek_kernels(text: str) -> str:
         )
 
         old = """@triton.jit
-    def _fp8_ue8m0_quantize(vals):
-        \"\"\"Quantize float32 values to FP8 E4M3 with a ue8m0 (power-of-2) scale.
+def _fp8_ue8m0_quantize(vals):
+    \"\"\"Quantize float32 values to FP8 E4M3 with a ue8m0 (power-of-2) scale.
 
-        Returns (fp8_vals, scale) so the caller can store them or reuse the scale.
-        \"\"\"
-        vals = vals.to(tl.float32)
-        amax = tl.max(tl.abs(vals))
-        scale = tl.div_rn(tl.maximum(amax, 1e-4), 448.0)
-        scale = tl.math.exp2(tl.math.ceil(tl.math.log2(scale)))
-        fp8_vals = tl.div_rn(vals, scale).to(tl.float8e4nv)
-        return fp8_vals, scale
-    """
+    Returns (fp8_vals, scale) so the caller can store them or reuse the scale.
+    \"\"\"
+    vals = vals.to(tl.float32)
+    amax = tl.max(tl.abs(vals))
+    scale = tl.div_rn(tl.maximum(amax, 1e-4), 448.0)
+    scale = tl.math.exp2(tl.math.ceil(tl.math.log2(scale)))
+    fp8_vals = tl.div_rn(vals, scale).to(tl.float8e4nv)
+    return fp8_vals, scale
+"""
         new = """# SM80_SOFTWARE_E4M3FN: Triton cannot emit fp8e4nv conversions on
-    # Ampere.  Keep the exact E4M3FN bit pattern in uint8 storage and only view it
-    # as torch.float8_e4m3fn at Python boundaries.
-    @triton.jit
-    def _fp8_ue8m0_quantize(vals):
-        \"\"\"Quantize to E4M3FN bytes with a ue8m0 (power-of-2) scale.\"\"\"
-        vals = vals.to(tl.float32)
-        amax = tl.max(tl.abs(vals))
-        scale = tl.div_rn(tl.maximum(amax, 1e-4), 448.0)
-        scale = tl.math.exp2(tl.math.ceil(tl.math.log2(scale)))
-        fp8_bytes = _encode_e4m3fn_u8(tl.div_rn(vals, scale))
-        return fp8_bytes, scale
-    """
+# Ampere. Keep the exact E4M3FN bit pattern in uint8 storage and only view it
+# as torch.float8_e4m3fn at Python boundaries.
+@triton.jit
+def _fp8_ue8m0_quantize(vals):
+    \"\"\"Quantize to E4M3FN bytes with a ue8m0 (power-of-2) scale.\"\"\"
+    vals = vals.to(tl.float32)
+    amax = tl.max(tl.abs(vals))
+    scale = tl.div_rn(tl.maximum(amax, 1e-4), 448.0)
+    scale = tl.math.exp2(tl.math.ceil(tl.math.log2(scale)))
+    fp8_bytes = _encode_e4m3fn_u8(tl.div_rn(vals, scale))
+    return fp8_bytes, scale
+"""
         text = replace_once(text, old, new, "deepseek kernels: ue8m0 software encode")
 
-        # Keep the indexer cache pointer byte-addressed; storing uint8 E4M3 bytes
-        # into an fp8 pointer would itself request an unsupported SM80 conversion.
         old = """        if indexer_k_cache.dtype == torch.uint8:
-                indexer_k_cache = indexer_k_cache.view(torch.float8_e4m3fn)
-    """
-        new = """        # Keep raw uint8 storage on SM80.  _fp8_quant_and_cache_write writes
-            # the E4M3FN bit pattern directly; the reader decodes the same bytes.
-            if indexer_k_cache.dtype != torch.uint8:
-                indexer_k_cache = indexer_k_cache.view(torch.uint8)
-    """
+            indexer_k_cache = indexer_k_cache.view(torch.float8_e4m3fn)
+"""
+        new = """        # Keep raw uint8 storage on SM80. _fp8_quant_and_cache_write writes
+        # the E4M3FN bit pattern directly; the reader decodes the same bytes.
+        if indexer_k_cache.dtype != torch.uint8:
+            indexer_k_cache = indexer_k_cache.view(torch.uint8)
+"""
         text = replace_once(text, old, new, "deepseek kernels: byte indexer cache")
 
-        # Baseline MLA KV is BF16, so fused_q always runs with
-        # quantize_mqa=False. Only index-Q itself must be software-encoded on SM80.
         old = "    index_q_fp8 = torch.empty_like(index_q, dtype=torch.float8_e4m3fn)\n"
         new = """    index_q_fp8_storage = torch.empty_like(index_q, dtype=torch.uint8)
-        index_q_fp8 = index_q_fp8_storage.view(torch.float8_e4m3fn)
-    """
+    index_q_fp8 = index_q_fp8_storage.view(torch.float8_e4m3fn)
+"""
         text = replace_once(text, old, new, "deepseek kernels: uint8 index-Q output")
 
-        # CuTeDSL is a native-FP8 path.  Never select it on SM80.
         text = text.replace(
             "    if current_platform.is_cuda():\n"
             "        from vllm.models.deepseek_v32.nvidia.ops.fused_q_cutedsl import (",
@@ -138,23 +134,20 @@ def patch_deepseek_kernels(text: str) -> str:
             1,
         )
 
-        # Triton receives byte storage, not an fp8 pointer.
         old = """        index_q_fp8,
-            index_q_fp8.stride(0),
-            index_q_fp8.stride(1),
-            index_q_head_dim,
-    """
+        index_q_fp8.stride(0),
+        index_q_fp8.stride(1),
+        index_q_head_dim,
+"""
         new = """        index_q_fp8_storage,
-            index_q_fp8_storage.stride(0),
-            index_q_fp8_storage.stride(1),
-            index_q_head_dim,
-    """
+        index_q_fp8_storage.stride(0),
+        index_q_fp8_storage.stride(1),
+        index_q_head_dim,
+"""
         text = replace_once(text, old, new, "deepseek kernels: fused-q byte pointer")
 
-    # SM80_SOFTWARE_E4M3FN_MQA: cover the remaining fused-Q FP8 pack path.
-    # This path is normally disabled by the BF16 MLA cache contract, but keeping
-    # it architecture-safe prevents an accidental FP8-cache setting from
-    # failing at Triton compile time.
+    # SM80_SOFTWARE_E4M3FN_MQA: the fused MQA-query pack also contains native
+    # fp8e4nv casts in v0.30. Keep those bytes architecture-neutral as well.
     text = replace_once(
         text,
         "                ql_nope_fp8 = (ql_nope / scale).to(tl.float8e4nv)\n",
@@ -193,7 +186,7 @@ def patch_deepseek_kernels(text: str) -> str:
         mqa_q = q_pe_out
 """
     new = """    if quantize_mqa:
-        # Keep the E4M3FN bit-pattern byte-addressed inside Triton on SM80.
+        # Byte-addressed storage avoids an unsupported Triton fp8e4nv store on SM80.
         mqa_q_fp8_storage = torch.empty(
             q_pe.shape[0],
             q_pe.shape[1],
@@ -231,18 +224,17 @@ def patch_deepseek_kernels(text: str) -> str:
 """
     text = replace_once(text, old, new, "deepseek kernels: fused-q MQA byte pointer")
 
-    # All fused-Q quantization branches must be architecture-safe on SM80.
     helper = text[text.index("def _fp8_ue8m0_quantize"):text.index(
         "def _fp8_quant_and_cache_write"
     )]
     if "tl.float8e4nv" in helper:
         raise RuntimeError("deepseek kernels: native fp8 cast remains in index quantizer")
+
     fq0 = text.index("def _fused_q_kernel")
     fq1 = text.index("def fused_q(", fq0)
     if "tl.float8e4nv" in text[fq0:fq1]:
         raise RuntimeError("deepseek kernels: native fp8 cast remains in fused_q kernel")
     return text
-
 
 def patch_sparse_indexer(text: str) -> str:
     def patch_ragged_decode(text: str) -> str:
