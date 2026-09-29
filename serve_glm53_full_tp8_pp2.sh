@@ -33,15 +33,17 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # GLM-5.3 supports longer contexts, but BF16 KV scales linearly with context.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 
-# Production defaults. Keep CUDA graphs and prefix caching enabled from the
-# first deployment. GLM-5.3 on A100 80GB can OOM while profiling the default
-# 128-request CUDA-graph envelope even before KV-cache allocation. Keep the
-# scheduler default concurrency, but cap graph capture at 32 requests; larger
-# batches transparently use the non-captured path.
+# Production defaults. Keep decode CUDA graphs and prefix caching enabled.
+# Full GLM-5.3 FP8 leaves much less graph-capture headroom on A100 than the
+# smaller NVFP4 variants. PIECEWISE graph profiling can exhaust PP0 before KV
+# allocation, so default to FULL_DECODE_ONLY: pure decode retains full CUDA
+# graphs while prefill/mixed batches run eagerly. Cap decode capture at 32;
+# larger decode batches transparently use the non-captured path.
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
 MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"
+CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"
 BLOCK_SIZE="${BLOCK_SIZE:-64}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
@@ -133,6 +135,7 @@ preflight() {
   echo "max_num_seqs=${MAX_NUM_SEQS:-vllm-default}"
   echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS:-vllm-default}"
   echo "max_cudagraph_capture_size=${MAX_CUDAGRAPH_CAPTURE_SIZE}"
+  echo "cudagraph_mode=${CUDAGRAPH_MODE}"
   echo "prefix_caching=${ENABLE_PREFIX_CACHING}"
   echo "enforce_eager=${ENFORCE_EAGER}"
   echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
@@ -227,6 +230,7 @@ build_args() {
     --max-model-len "${MAX_MODEL_LEN}"
     --block-size "${BLOCK_SIZE}"
     --max-cudagraph-capture-size "${MAX_CUDAGRAPH_CAPTURE_SIZE}"
+    --compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"
   )
 
   [[ -n "${MAX_NUM_SEQS}" ]] && VLLM_ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
