@@ -7,7 +7,7 @@ Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 - base image: vLLM 0.30.0 / CUDA 13.0
 - architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
 - attention: DeepSeek-V3.2 DSA sparse MLA
-- port revision: `glm53-full-sm80-cu130-v030-r20260929-9`
+- port revision: `glm53-full-sm80-cu130-v030-r20260929-10`
 
 The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
 
@@ -77,8 +77,10 @@ the heavier stage.
   and keep decode logits width tied to configured `max_model_len`.
 - **#47522 protection**: chunked/prefix prefill recovers the activation dtype
   from Marlin params rather than casting activations to packed int32 weights.
-- **#49844 workaround**: production launcher explicitly selects breakable CUDA
-  graphs and leaves Inductor compilation disabled for GlmMoeDsa PP serving.
+- **#49844 avoidance**: vLLM 0.30 already classifies `GlmMoeDsaForCausalLM`
+  as a breakable-CUDA-graph architecture and disables Inductor compilation for
+  that path. The launcher does not duplicate this with an environment override;
+  it only selects `FULL_DECODE_ONLY` after the observed A100 PIECEWISE OOM.
 - **#52500**: use the padded pack/unpack path for ragged warmup/mixed decode
   batches even when metadata incorrectly reports `requires_padding=False`.
 
@@ -125,9 +127,10 @@ AITER BMM changes are not applicable to A100.
 
 An explicit block-outermost `BLHNC` layout can make V3.2 sparse MLA inherit
 a mixed MLA+indexer physical block stride that is not an integer number of
-576-element MLA rows.  The SM80 backend now declares only the known-good
-layer-compact `LBHNC` (legacy HND) layout, and the production launcher pins
-`VLLM_KV_CACHE_LAYOUT=LBHNC` so a host environment cannot override it.
+576-element MLA rows.  The SM80 backend declares only the known-good layer-compact `LBHNC`
+(legacy HND) layout. The launcher leaves layout selection to vLLM's backend
+resolver and rejects a conflicting inherited `VLLM_KV_CACHE_LAYOUT` instead
+of pinning the same value twice.
 
 ### #54296
 
@@ -211,6 +214,36 @@ fragmentation from a sequence of differently-sized allocations is harmless.
 This is therefore a **runtime memory telemetry item**, not a source blocker.
 Do not claim 128K production memory stability until it has been measured on the
 actual A100 deployment.
+
+## Minimal SIF patch scope
+
+The SIF is based directly on `vllm/vllm-openai:v0.30.0`; it installs no
+additional runtime packages. The patcher copies four SM80-only modules and
+edits only the upstream files needed to connect them or backport post-v0.30
+correctness fixes.
+
+| File / change | Why it is required |
+|---|---|
+| `v1/attention/backends/mla/triton_mla_sparse.py` | SM80 sparse-MLA backend; upstream v0.30 has no CUDA sparse MLA backend usable on A100 |
+| `v1/attention/ops/mqa_logits_triton.py` | DSA indexer MQA/paged-MQA fallback because DeepGEMM is unsupported on SM80 |
+| `v1/attention/ops/triton_mla_sparse_kernel.py` | sparse MLA attention kernel for SM80 |
+| `v1/attention/ops/fp8_sm80.py` | portable E4M3FN encode for the v0.30 fused index-Q/index-K path; native Triton FP8 conversion does not compile on SM80 |
+| `v1/attention/backends/registry.py` | register `TRITON_MLA_SPARSE` |
+| `v1/attention/backends/mla/indexer.py` | gate DeepGEMM by actual hardware support instead of importability |
+| `model_executor/layers/sparse_attn_indexer.py` | route prefill/decode logits to Triton on SM80; includes #48285 and #52500 correctness fixes |
+| `models/deepseek_v32/common/kernels.py` | make the current v0.30 fused index-Q/index-K quantization path legal on SM80 |
+| `models/deepseek_v32/attention.py` | backport #58594 Top-K backend propagation |
+| `model_executor/layers/attention/mla_attention.py` | publish sparse-MLA packed-block row alignment required by the Triton reader |
+| `v1/kv_cache_interface.py`, `v1/core/kv_cache_utils.py` | carry and honor that physical block-stride alignment (#55528 lineage) |
+
+Explicitly **not** patched: PP pinned-buffer V1 fix #47644, global BlockTable,
+PIECEWISE KV-binding workarounds, GLM-5.3-Flash/KPool code, DeepSelect,
+speculative decoding, generic scheduler code, NCCL code, or model weight
+loading. #47522's Marlin packed-int32 prefill fix is already present in exact
+vLLM 0.30.0 and is validated rather than patched.
+
+The SIF also contains the patch script, revision marker, and GPU smoke script
+for verification. Those files do not alter vLLM runtime behavior.
 
 ## Source/CI validation
 
