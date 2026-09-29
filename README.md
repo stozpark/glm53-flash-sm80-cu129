@@ -8,8 +8,8 @@
 - 대상 topology: **TP8 x PP2**
 - container base: **vLLM 0.30.0 / CUDA 13.0**
 - model weights: native block-FP8
-- Linear/MoE: **Marlin**
-- main MLA KV: **BF16**
+- Linear/MoE: vLLM **auto** (SM80에서는 지원 가능한 fallback 선택)
+- main MLA KV: vLLM **auto** (이 backend에서는 BF16로 해석)
 - DSA indexer cache: FP8 E4M3FN
 - sparse MLA backend: **TRITON_MLA_SPARSE**
 
@@ -163,14 +163,13 @@ layer 42가 full-indexer layer이므로 stage 간 Top-K relay가 필요 없습�
 TP=8
 PP=2
 PP partition=42,36
-CUDA graph=ON (breakable CUDA graph 강제, Inductor compile OFF)
-prefix caching=ON
-block size=64
-KV cache layout=LBHNC (layer-compact HND; #55431 guard)
-main MLA KV=BF16
-Linear=Marlin
-MoE=Marlin
-MTP=OFF (별도 enable 전까지)
+CUDA graph=FULL_DECODE_ONLY
+prefix caching=vLLM default (ON)
+block size=vLLM/backend auto-resolution (TRITON_MLA_SPARSE -> 64)
+KV cache layout=vLLM/backend auto-resolution (TRITON_MLA_SPARSE -> LBHNC)
+KV dtype=vLLM auto (TRITON_MLA_SPARSE -> BF16)
+Linear/MoE=vLLM auto
+MTP=OFF
 max model len=131072
 ```
 
@@ -271,7 +270,7 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
 - v0.30 model registry가 full GLM을 DeepSeek-V3.2 path로 라우팅하는지 검사
 - GLM MoE router FP32 처리와 `glm47` tool/reasoning parser 존재 확인
 - v0.30 CLI에 production launcher의 모든 option 존재 확인
-- FP8 128x128 block quantization -> Marlin linear/MoE support 확인
+- FP8 128x128 block quantization의 SM80 fallback 지원 여부 확인
 - SM80 software E4M3FN reference 검사
   - random/edge float32 100k+
   - FP16 전체 65,536 bit patterns
@@ -285,7 +284,7 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
 - sparse-only backend의 dense-MHA prefill 비활성화 (#51395 패턴)
 - #48285의 2-D decode seq_lens / fixed logits width 회귀 방지
 - #47522의 Marlin packed-int32 chunked-prefill dtype 회귀 방지
-- breakable CUDA graph 강제 및 Inductor compile 비활성 경로 확인 (#49844 회피)
+- GlmMoeDsa의 vLLM 기본 breakable-CG/compile-mode 정규화와 FULL_DECODE_ONLY 조합 확인 (#49844 회피)
 - exact 64-token DSA page contract
 - 42/36 PP partition이 두 stage 모두 full-indexer layer에서 시작하는지 검사
 - obsolete V1 #47644 / custom PP Top-K relay / global BlockTable mutation 부재 확인
