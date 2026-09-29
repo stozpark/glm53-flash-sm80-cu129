@@ -243,6 +243,8 @@ jobs:
           assert "tl.float8e4nv" not in s[a:b], "native FP8 remains in fused_q"
           assert "index_q_fp8_storage" in s
           assert "mqa_q_fp8_storage" in s
+          assert "q_pe_out = q_pe" in s
+          assert "q_pe_out = mqa_q_fp8" not in s
           print("SM80_FP8_ACTIVE_PATHS=PASS")
           PY
 
