@@ -280,11 +280,12 @@ jobs:
           test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260929-11"
           grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'CUDAGRAPH_MODE:-NONE' port/serve_glm53_full_tp8_pp2.sh
+          grep -q -- "--compilation-config '{\"cudagraph_mode\":\"NONE\"}'" port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--max-cudagraph-capture-size' port/serve_glm53_full_tp8_pp2.sh
-          grep -q -- '--compilation-config' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q 'CUDAGRAPH_MODE=' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--kv-cache-dtype bfloat16' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'RUN_GPU_SMOKE:-0' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'RUN_GPU_SMOKE:-auto' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'smoke.${EXPECTED_PORT_REVISION}.gpu${first_gpu}.ok' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--linear-backend' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--moe-backend' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--enable-prefix-caching' port/serve_glm53_full_tp8_pp2.sh
@@ -298,4 +299,6 @@ jobs:
           grep -q 'quantize_mqa=True' port/tests/sm80_glm53_full_kernel_smoke.py
           grep -q 'SM80_FUSED_Q_MQA_FP8_PACK=PASS' port/tests/sm80_glm53_full_kernel_smoke.py
           ! grep -q 'interleave=False' port/tests/sm80_glm53_full_kernel_smoke.py
+          grep -q -- '--kv-cache-dtype bfloat16' port/serve_glm53_full_tp16.sh
+          grep -q '"cudagraph_mode":"NONE"' port/serve_glm53_full_tp16.sh
           echo CUDA13_PROFILE=PASS
