@@ -65,17 +65,17 @@ def main() -> None:
         "--pipeline-parallel-size 2",
         'PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"',
         'MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"',
-        'MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"',
-        'CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"',
+        'CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-NONE}"',
         "--compilation-config",
         '"backend":"TRITON_MLA_SPARSE"',
+        "--kv-cache-dtype bfloat16",
         "--tool-call-parser glm47",
         "--reasoning-parser glm47",
         "--enable-auto-tool-choice",
     ):
         must(launcher, needle, "launcher")
     for forbidden in (
-        "--kv-cache-dtype",
+        "--max-cudagraph-capture-size",
         "--linear-backend",
         "--moe-backend",
         "--enable-prefix-caching",
@@ -101,7 +101,7 @@ def main() -> None:
         "--headless",
         "--attention-config",
         "--max-model-len",
-        "--max-cudagraph-capture-size",
+        "--kv-cache-dtype",
         "--compilation-config",
     ):
         must(parser_text, flag, "vLLM v0.30 CLI")
@@ -132,14 +132,26 @@ def main() -> None:
     must(backend, "def record_logical_topk_ready", "v0.30 DSA API")
     must(
         backend,
+        "supports_quant_query_input = False",
+        "SM80 BF16-query contract",
+    )
+    must(
+        backend,
+        '"bfloat16",',
+        "SM80 BF16 KV contract",
+    )
+    must(
+        backend,
         "supports_dense_mha_prefill = False",
         "sparse-only prefill routing",
     )
     must(backend, "_INDEXER_NUM_HEADS = 32", "GLM-5.3 indexer heads")
     must(backend, "_INDEXER_HEAD_DIM = 128", "GLM-5.3 indexer dim")
     must(smoke, "INDEX_HEADS = 32", "smoke config")
-    assert smoke.count("index_rope_interleave=True") >= 2
-    assert smoke.count("interleave=True") >= 2
+    assert smoke.count("index_rope_interleave=True") >= 3
+    assert smoke.count("interleave=True") >= 3
+    must(smoke, "quantize_mqa=True", "SM80 fused-Q MQA smoke")
+    must(smoke, "SM80_FUSED_Q_MQA_FP8_PACK=PASS", "SM80 MQA pack smoke")
 
     # Exact v0.30 indexer page-size contract.
     indexer = (vllm / "v1/attention/backends/mla/indexer.py").read_text()
@@ -164,20 +176,12 @@ def main() -> None:
     must(tool_parsers, '"glm47"', "GLM tool parser")
     must(reasoning_parsers, '"glm47"', "GLM reasoning parser")
 
-    # Launcher intentionally omits redundant defaults.
+    # Prefix caching stays on the vLLM default, but the official GLM-5.3
+    # FP8-KV recipe is intentionally overridden: TRITON_MLA_SPARSE on SM80
+    # consumes BF16 MLA KV and must never request FP8 query packing.
     cache_cfg = (vllm / "config/cache.py").read_text()
-    platform_if = (vllm / "platforms/interface.py").read_text()
     must(cache_cfg, "enable_prefix_caching: bool = True", "prefix caching default")
-    must(
-        platform_if,
-        'if cache_config.cache_dtype == "auto":',
-        "KV cache auto resolution",
-    )
-    must(
-        platform_if,
-        "kv_cache_dtype = model_config.dtype",
-        "KV cache auto uses model dtype",
-    )
+    must(launcher, "--kv-cache-dtype bfloat16", "SM80 BF16 MLA KV override")
 
     vllm_cfg = (vllm / "config/vllm.py").read_text()
     b0 = vllm_cfg.index("DEFAULT_BREAKABLE_CUDAGRAPH_ARCHITECTURES")
@@ -235,8 +239,9 @@ def main() -> None:
         "topk_backend=self.indexer.indexer_op.topk_backend",
         "upstream #58594 GLM-5.3 sparse top-k backend selection",
     )
-    must(patched_kernels, "SM80_SOFTWARE_E4M3FN", "software E4M3")
+    must(patched_kernels, "SM80_SOFTWARE_E4M3FN_MQA", "software E4M3 MQA")
     must(patched_kernels, "index_q_fp8_storage", "byte-addressed index Q")
+    must(patched_kernels, "mqa_q_fp8_storage", "byte-addressed MQA query")
     must(patched_sparse, "_sm80_fp8_fp4_mqa_logits", "Triton indexer fallback")
     must(
         patched_sparse,
@@ -349,10 +354,15 @@ def main() -> None:
     q0 = patched_kernels.index("def _fp8_ue8m0_quantize")
     q1 = patched_kernels.index("def _fp8_quant_and_cache_write", q0)
     must_not(patched_kernels[q0:q1], "tl.float8e4nv", "index-K active quantizer")
-    # BF16 main KV makes quantize_mqa=False. The stock MQA-query FP8
-    # branches may retain native FP8 casts, but index-Q storage itself must be
-    # byte-addressed and the active index quantizer must be software E4M3FN.
+    fq0 = patched_kernels.index("def _fused_q_kernel")
+    fq1 = patched_kernels.index("def fused_q(", fq0)
+    must_not(
+        patched_kernels[fq0:fq1],
+        "tl.float8e4nv",
+        "fused-Q SM80 quantization",
+    )
     must(patched_kernels, "index_q_fp8_storage", "byte-addressed index-Q output")
+    must(patched_kernels, "mqa_q_fp8_storage", "byte-addressed MQA output")
 
     print("GLM53_FULL_SM80_STATIC_SEMANTICS=PASS")
 
