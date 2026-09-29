@@ -11,8 +11,6 @@ SIF_PATH="${SIF_PATH:-$(pwd)/glm53-full-sm80-vllm030-cu130.sif}"
 MODEL_CONTAINER_PATH="/models/GLM-5.3"
 PORT="${PORT:-8200}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
-BLOCK_SIZE="${BLOCK_SIZE:-64}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 
 [[ -f "${SIF_PATH}" ]] || { echo "ERROR: SIF not found: ${SIF_PATH}" >&2; exit 1; }
 if command -v apptainer >/dev/null 2>&1; then
@@ -35,9 +33,9 @@ exec "${R}" exec --nv \
     --port "${PORT}" \
     --tensor-parallel-size 16 \
     --attention-config '{"backend":"TRITON_MLA_SPARSE"}' \
-    --block-size "${BLOCK_SIZE}" \
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+    --kv-cache-dtype bfloat16 \
     --max-model-len "${MAX_MODEL_LEN}" \
+    --compilation-config '{"cudagraph_mode":"NONE"}' \
     --tool-call-parser glm47 \
     --reasoning-parser glm47 \
     --enable-auto-tool-choice \
