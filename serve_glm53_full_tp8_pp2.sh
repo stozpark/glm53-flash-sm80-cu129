@@ -32,11 +32,10 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # A100 memory/correctness overrides. Everything else stays at the vLLM 0.30
 # / official GLM-5.3 defaults.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
-MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"
-CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"
+CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-NONE}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-0}"
-EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-10"
+EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-11"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -132,7 +131,6 @@ preflight() {
   echo "model=${MODEL_HOST_PATH}"
   echo "sif=${SIF_PATH}"
   echo "pp_layer_partition=${PP_LAYER_PARTITION}"
-  echo "max_cudagraph_capture_size=${MAX_CUDAGRAPH_CAPTURE_SIZE}"
   echo "cudagraph_mode=${CUDAGRAPH_MODE}"
   echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
 }
@@ -146,7 +144,7 @@ from pathlib import Path
 
 assert version("vllm") == "0.30.0", version("vllm")
 revision = Path("/opt/glm53-full-sm80/PORT_REVISION").read_text().strip()
-assert revision == "glm53-full-sm80-cu130-v030-r20260929-10", revision
+assert revision == "glm53-full-sm80-cu130-v030-r20260929-11", revision
 root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 if not root.exists():
     import importlib.util
@@ -161,8 +159,9 @@ checks = {
         "DeviceCapability(8, 0)",
     ],
     root / "models/deepseek_v32/common/kernels.py": [
-        "SM80_SOFTWARE_E4M3FN",
+        "SM80_SOFTWARE_E4M3FN_MQA",
         "index_q_fp8_storage",
+        "mqa_q_fp8_storage",
     ],
     root / "models/deepseek_v32/attention.py": [
         "topk_backend=self.indexer.indexer_op.topk_backend",
@@ -222,16 +221,16 @@ build_args() {
     --master-addr "${MASTER_ADDR}"
     --master-port "${MASTER_PORT}"
 
-    # Only backend override required by the SM80 port. KV dtype is left at
-    # vLLM's default "auto" -> model BF16; FP8 KV is not supported by this backend.
+    # SM80-specific attention contract. The official GLM-5.3 recipe uses FP8
+    # KV on Hopper/Blackwell, but the A100 Triton sparse-MLA backend requires
+    # BF16 main MLA KV and BF16 queries.
     --attention-config '{"backend":"TRITON_MLA_SPARSE"}'
+    --kv-cache-dtype bfloat16
 
-    # A100-specific limits. The SM80 attention backend advertises its exact
-    # 64-token page contract, so block size stays on vLLM auto-resolution.
-    # PIECEWISE graph profiling OOMs on the full FP8 checkpoint; keep full
-    # graphs only for uniform decode.
+    # Startup-first A100 baseline. CUDA-graph profiling/capture exhausted the
+    # remaining 80GB headroom in target-hardware runs, so disable graphs until
+    # the server is proven stable end-to-end.
     --max-model-len "${MAX_MODEL_LEN}"
-    --max-cudagraph-capture-size "${MAX_CUDAGRAPH_CAPTURE_SIZE}"
     --compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"
   )
 
