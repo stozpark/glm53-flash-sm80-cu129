@@ -287,7 +287,9 @@ jobs:
           grep -q 'ENABLE_PREFIX_CACHING:-1' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'ENFORCE_EAGER:-0' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'MAX_CUDAGRAPH_CAPTURE_SIZE:-32' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'CUDAGRAPH_MODE:-FULL_DECODE_ONLY' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--max-cudagraph-capture-size' port/serve_glm53_full_tp8_pp2.sh
+          grep -q -- '--compilation-config' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'RUN_GPU_SMOKE:-1' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'VLLM_KV_CACHE_LAYOUT=LBHNC' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-9"' port/serve_glm53_full_tp8_pp2.sh
