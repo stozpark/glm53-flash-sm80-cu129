@@ -25,7 +25,6 @@ SM80 sparse-MLA 구현은 vLLM PR **#47629**의 실제 A800 E2E 경로를
 추가로 확인한 upstream 변경:
 
 - **#55173**: pre-SM89 CUDA용 portable E4M3 conversion
-- **#54851**: DeepSeek-V3.2/GLM-5.x PIECEWISE CUDA-graph KV binding fix
 - **#58594**: full GLM-5.3 sparse-indexer Top-K backend propagation (v0.30 이후 merge)
 - **#55528/#56254**: V3.2 sparse MLA packed physical-block stride alignment
 - **#51395**: sparse-only MLA backend가 dense-MHA prefill을 광고하면 안 된다는 capability fix
@@ -111,21 +110,6 @@ v0.30 릴리스 이후 merge된 full GLM-5.3/DSA 수정도 필요한 부분만 b
   않으므로 `supports_dense_mha_prefill=False`를 명시하고 short/chunked
   prefill도 지원되는 sparse-MQA 경로로 보냄
 
-### 5. PIECEWISE CUDA-graph KV binding
-
-vLLM #54851에서 보고된 DSA graph-capture 문제를 v0.30 코드에 맞춰
-backport했습니다.
-
-PIECEWISE capture 시 attention metadata가 없어도 실제 KV cache view와
-persistent slot-mapping buffer를 graph에 연결해 두어야 합니다. 그렇지 않으면
-decode graph가 KV write를 영구히 생략할 수 있습니다.
-
-marker:
-
-```text
-SM80_PIECEWISE_KV_BINDING_FIX
-```
-
 ## TP8 x PP2 partition
 
 GLM-5.3은 indexer Top-K 하나를 4개 layer 묶음에서 공유합니다.
@@ -178,7 +162,7 @@ scheduler concurrency는 vLLM 0.30의 A100 OpenAI-server 기본값을 그대로
 
 ```text
 max_num_batched_tokens = 2048
-max_num_seqs           = 256
+max_num_seqs           = 128
 ```
 
 환경변수로 명시했을 때만 override합니다.
@@ -212,6 +196,7 @@ PASS 항목:
 ```text
 SM80_FUSED_NORM_ROPE_INDEX_K=PASS
 SM80_FUSED_Q_INDEX_Q=PASS
+SM80_FUSED_Q_MQA_FP8_PACK=PASS
 SM80_TRITON_MQA_PREFILL=PASS
 SM80_TRITON_MQA_DECODE=PASS
 SM80_TRITON_MLA_SPARSE=PASS
