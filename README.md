@@ -9,7 +9,7 @@
 - container base: **vLLM 0.30.0 / CUDA 13.0**
 - model weights: native block-FP8
 - Linear/MoE: vLLM **auto** (SM80에서는 지원 가능한 fallback 선택)
-- main MLA KV: vLLM **auto** (이 backend에서는 BF16로 해석)
+- main MLA KV: **BF16** (`--kv-cache-dtype bfloat16`; official FP8-KV recipe를 SM80에서 override)
 - DSA indexer cache: FP8 E4M3FN
 - sparse MLA backend: **TRITON_MLA_SPARSE**
 
@@ -163,11 +163,11 @@ layer 42가 full-indexer layer이므로 stage 간 Top-K relay가 필요 없습�
 TP=8
 PP=2
 PP partition=42,36
-CUDA graph=FULL_DECODE_ONLY
+CUDA graph=NONE (A100 80GB startup-safe baseline)
 prefix caching=vLLM default (ON)
 block size=vLLM/backend auto-resolution (TRITON_MLA_SPARSE -> 64)
 KV cache layout=vLLM/backend auto-resolution (TRITON_MLA_SPARSE -> LBHNC)
-KV dtype=vLLM auto (TRITON_MLA_SPARSE -> BF16)
+KV dtype=BF16 (SM80 backend contract)
 Linear/MoE=vLLM auto
 MTP=OFF
 max model len=131072
@@ -198,8 +198,9 @@ bash ./build_glm53_full_sm80_sif.sh \
 ## GPU smoke
 
 full checkpoint를 읽기 전에 SIF 안의 실제 Triton kernels를 A100에서
-검증할 수 있습니다. Production launcher도 기본적으로 각 노드에서 이 smoke를
-한 번 실행한 뒤 서버를 시작합니다 (`RUN_GPU_SMOKE=1`).
+검증합니다. Production launcher는 새 `PORT_REVISION`마다 각 노드의 첫 GPU에서
+smoke를 **한 번만 자동 실행**하고 성공 stamp를 남깁니다
+(`RUN_GPU_SMOKE=auto`). 같은 revision 재시작에서는 다시 실행하지 않습니다.
 
 ```bash
 GPU=0 bash ./verify_glm53_full_sm80_sif.sh \
@@ -276,19 +277,19 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
   - FP16 전체 65,536 bit patterns
   - BF16 전체 65,536 bit patterns
   - signed NaN/Inf/overflow saturating semantics
-- active index-Q/index-K path에 native `tl.float8e4nv` cast가 남지 않았는지 검사
+- active index-Q/index-K와 fused MQA-query pack에 native `tl.float8e4nv` cast가 남지 않았는지 검사
+- `quantize_mqa=True` 경로를 실제 SM80 JIT + <=1 ULP reference로 검사
 - `record_logical_topk_ready()` compatibility hook
-- #54851-equivalent PIECEWISE KV-binding fix
 - #58594 Top-K backend propagation
 - #55528/#56254 packed MLA block-stride alignment
 - sparse-only backend의 dense-MHA prefill 비활성화 (#51395 패턴)
 - #48285의 2-D decode seq_lens / fixed logits width 회귀 방지
 - #47522의 Marlin packed-int32 chunked-prefill dtype 회귀 방지
-- GlmMoeDsa의 vLLM 기본 breakable-CG/compile-mode 정규화와 FULL_DECODE_ONLY 조합 확인 (#49844 회피)
+- A100 startup baseline에서 CUDA graph를 완전히 비활성화해 observed graph-profile OOM 회피
 - exact 64-token DSA page contract
 - 42/36 PP partition이 두 stage 모두 full-indexer layer에서 시작하는지 검사
 - obsolete V1 #47644 / custom PP Top-K relay / global BlockTable mutation 부재 확인
-- production launcher: native MP / graph ON / prefix cache ON / SIF revision preflight
+- production launcher: native MP / BF16 MLA KV / graph NONE / prefix cache default / SIF revision preflight
 - shell syntax
 
 - 128K sparse-indexer prefill logits budget
@@ -297,9 +298,9 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
   - 128K context: at most 1024 rows/launch, therefore two <=512 MiB launches per 2048-token chunk
 
 이 CI가 확인할 수 없는 것은 **실제 SM80 GPU 실행 자체**입니다. 따라서 남은
-하드웨어 의존 검증은 A100에서의 Triton JIT/numerical smoke, 16-GPU NCCL/PP
-initialization, Marlin weight load/repack peak memory, CUDA-graph replay 및 실제
-generation E2E입니다.
+하드웨어 의존 검증은 A100에서의 전체 Triton JIT/numerical smoke, 16-GPU NCCL/PP
+initialization, weight load/repack peak memory 및 실제 generation E2E입니다. CUDA graph는
+현재 startup-safe baseline에서 의도적으로 비활성화되어 있습니다.
 
 ## Main files
 
