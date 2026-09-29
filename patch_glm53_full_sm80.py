@@ -42,27 +42,6 @@ def patch_registry(text: str) -> str:
     )
 
 
-def patch_cuda(text: str) -> str:
-    marker = "AttentionBackendEnum.TRITON_MLA_SPARSE"
-    if marker in text:
-        return text
-    old = """            sparse_tail = [
-                AttentionBackendEnum.FLASH_ATTN_MLA_SPARSE,
-                AttentionBackendEnum.FLASHMLA_SPARSE,
-            ]
-"""
-    new = """            sparse_tail = [
-                # SM80/Ampere fallback.  Hopper/Blackwell native sparse
-                # backends remain higher-performance where supported, while
-                # their supports_combination checks reject A100.
-                AttentionBackendEnum.TRITON_MLA_SPARSE,
-                AttentionBackendEnum.FLASH_ATTN_MLA_SPARSE,
-                AttentionBackendEnum.FLASHMLA_SPARSE,
-            ]
-"""
-    return replace_once(text, old, new, "cuda: sparse MLA priority")
-
-
 def patch_indexer_metadata(text: str) -> str:
     # v0.30 bundles DeepGEMM, so importability alone is not enough on A100.
     text = text.replace(
@@ -140,63 +119,13 @@ def _fp8_ue8m0_quantize(vals):
 """
     text = replace_once(text, old, new, "deepseek kernels: byte indexer cache")
 
-    # The packed MQA-query branches are constexpr-dead with BF16 MLA KV, but
-    # make them SM80-safe as well so enabling an fp8-query backend later does
-    # not require another image.
-    text = text.replace(
-        "ql_nope_fp8 = (ql_nope / scale).to(tl.float8e4nv)",
-        "ql_nope_fp8 = _encode_e4m3fn_u8(ql_nope / scale)",
-    )
-    text = text.replace(
-        "(r1 / scale).to(tl.float8e4nv)",
-        "_encode_e4m3fn_u8(r1 / scale)",
-    )
-    text = text.replace(
-        "(r2 / scale).to(tl.float8e4nv)",
-        "_encode_e4m3fn_u8(r2 / scale)",
-    )
-
-    old = """    if quantize_mqa:
-        # fp8 path: pack [ql_nope; q_pe] into a single fp8 tensor.
-        mqa_q_fp8 = torch.empty(
-            q_pe.shape[0],
-            q_pe.shape[1],
-            ql_nope.shape[2] + q_pe.shape[2],
-            dtype=torch.float8_e4m3fn,
-            device=q_pe.device,
-        )
-        # Placeholder; pid 0 packs q_pe into mqa_q_fp8 instead.
-        q_pe_out = mqa_q_fp8
-        mqa_q = mqa_q_fp8
-    else:
-        # bf16 path: only the RoPE'd q_pe is produced; ql_nope used directly.
-        q_pe_out = torch.empty_like(q_pe)
-        mqa_q_fp8 = q_pe_out  # unused placeholder for the fp8 pack pointer
-        mqa_q = q_pe_out
-
-    index_q_fp8 = torch.empty_like(index_q, dtype=torch.float8_e4m3fn)
-"""
-    new = """    if quantize_mqa:
-        # Triton output is byte-addressed on SM80.  The consumer still sees
-        # the canonical torch.float8_e4m3fn dtype through a zero-copy view.
-        mqa_q_fp8 = torch.empty(
-            q_pe.shape[0],
-            q_pe.shape[1],
-            ql_nope.shape[2] + q_pe.shape[2],
-            dtype=torch.uint8,
-            device=q_pe.device,
-        )
-        q_pe_out = mqa_q_fp8
-        mqa_q = mqa_q_fp8.view(torch.float8_e4m3fn)
-    else:
-        q_pe_out = torch.empty_like(q_pe)
-        mqa_q_fp8 = q_pe_out  # unused when QUANTIZE_MQA=False
-        mqa_q = q_pe_out
-
-    index_q_fp8_storage = torch.empty_like(index_q, dtype=torch.uint8)
+    # Baseline MLA KV is BF16, so fused_q always runs with
+    # quantize_mqa=False. Only index-Q itself must be software-encoded on SM80.
+    old = "    index_q_fp8 = torch.empty_like(index_q, dtype=torch.float8_e4m3fn)\n"
+    new = """    index_q_fp8_storage = torch.empty_like(index_q, dtype=torch.uint8)
     index_q_fp8 = index_q_fp8_storage.view(torch.float8_e4m3fn)
 """
-    text = replace_once(text, old, new, "deepseek kernels: uint8 fused-q outputs")
+    text = replace_once(text, old, new, "deepseek kernels: uint8 index-Q output")
 
     # CuTeDSL is a native-FP8 path.  Never select it on SM80.
     text = text.replace(
@@ -220,14 +149,9 @@ def _fp8_ue8m0_quantize(vals):
 """
     text = replace_once(text, old, new, "deepseek kernels: fused-q byte pointer")
 
-    # Baseline BF16 MLA KV keeps every remaining fp8 MLA-cache branch
-    # constexpr-dead.  Fail loudly if the unconditional/indexer conversions
-    # that caused the A100 crash survived.
-    fused_q_start = text.index("def _fused_q_kernel(")
-    fused_q_end = text.index("def fused_q(", fused_q_start)
-    fused_q_body = text[fused_q_start:fused_q_end]
-    if ".to(tl.float8e4nv)" in fused_q_body:
-        raise RuntimeError("deepseek kernels: native fp8 cast remains in fused_q")
+    # The active index-Q/index-K quantizer must contain no native FP8 cast.
+    # Stock MQA-query FP8 casts remain untouched because BF16 KV makes
+    # QUANTIZE_MQA=False for this backend.
     helper = text[text.index("def _fp8_ue8m0_quantize"):text.index(
         "def _fp8_quant_and_cache_write"
     )]
@@ -453,86 +377,22 @@ def _sm80_fp8_fp4_paged_mqa_logits(
     return patch_ragged_decode(text)
 
 
-def patch_piecewise_kv_binding(text: str) -> str:
-    """Backport the DeepSeek-V3.2 PIECEWISE CUDA-graph KV binding fix.
-
-    During PIECEWISE capture, attention metadata is absent but the persistent
-    slot-mapping buffers and bound KV caches must still be passed to
-    fused_norm_rope.  Passing None bakes "never write KV" into the captured
-    graph and can silently corrupt decode after the first token.
-    """
-    marker = "SM80_PIECEWISE_KV_BINDING_FIX"
+def patch_topk_backend(text: str) -> str:
+    """Backport upstream #58594 sparse-indexer Top-K backend propagation."""
+    marker = "topk_backend=self.indexer.indexer_op.topk_backend"
     if marker in text:
         return text
 
-    old = """        if forward_context.attn_metadata is None or self.use_pcp:
-            mla_kv_cache = None
-            mla_k_scale = None
-            indexer_k_cache = None
-            mla_slot = None
-            indexer_slot = None
-        else:
-            mla_kv_cache = None if hisparse_cache is not None else self.kv_cache
-            mla_k_scale = self._k_scale
-"""
-
-    new = """        # SM80_PIECEWISE_KV_BINDING_FIX: mirror the current upstream DSA
-        # graph-capture rule.  Capture has no attention metadata, but the real
-        # cache views and persistent slot buffers must be baked into the graph.
-        if self.use_pcp:
-            mla_kv_cache = None
-            mla_k_scale = None
-            indexer_k_cache = None
-            mla_slot = None
-            indexer_slot = None
-        elif forward_context.attn_metadata is None:
-            if (
-                mla_slot is not None
-                and hisparse_cache is None
-                and self.kv_cache.numel() > 0
-            ):
-                mla_kv_cache = self.kv_cache
-                mla_k_scale = self._k_scale
-            else:
-                mla_kv_cache = None
-                mla_k_scale = None
-                mla_slot = None
-
-            if (
-                indexer_slot is not None
-                and self.indexer is not None
-                and self.indexer.k_cache.kv_cache.numel() > 0
-            ):
-                indexer_k_cache = self.indexer.k_cache.kv_cache
-            else:
-                indexer_k_cache = None
-                indexer_slot = None
-        else:
-            mla_kv_cache = None if hisparse_cache is not None else self.kv_cache
-            mla_k_scale = self._k_scale
-"""
-
-    text = replace_once(
-        text, old, new, "deepseek attention: PIECEWISE KV binding"
-    )
-
-    # Upstream #58594 (merged after v0.30): the direct sparse_attn_indexer()
-    # call must use the backend selected when the layer/indexer was built.
-    # Otherwise it silently falls back to topk_backend="auto".
-    topk_marker = "topk_backend=self.indexer.indexer_op.topk_backend"
-    if topk_marker not in text:
-        old_topk = """                skip_topk_buffer_clear=True,
+    old = """                skip_topk_buffer_clear=True,
             )
 """
-        new_topk = """                skip_topk_buffer_clear=True,
+    new = """                skip_topk_buffer_clear=True,
                 topk_backend=self.indexer.indexer_op.topk_backend,
             )
 """
-        text = replace_once(
-            text, old_topk, new_topk, "deepseek attention: sparse top-k backend"
-        )
-    return text
-
+    return replace_once(
+        text, old, new, "deepseek attention: sparse top-k backend"
+    )
 
 
 def patch_mla_stride_alignment(text: str) -> str:
