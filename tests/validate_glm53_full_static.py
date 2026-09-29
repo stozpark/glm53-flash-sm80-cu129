@@ -66,6 +66,7 @@ def main() -> None:
         'BLOCK_SIZE="${BLOCK_SIZE:-64}"',
         'ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"',
         'ENFORCE_EAGER="${ENFORCE_EAGER:-0}"',
+        'MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"',
         "--kv-cache-dtype bfloat16",
         '"backend":"TRITON_MLA_SPARSE"',
         "--env VLLM_USE_BREAKABLE_CUDAGRAPH=1",
@@ -98,6 +99,7 @@ def main() -> None:
         "--moe-backend",
         "--block-size",
         "--enable-prefix-caching",
+        "--max-cudagraph-capture-size",
     ):
         must(parser_text, flag, "vLLM v0.30 CLI")
 
@@ -221,6 +223,16 @@ def main() -> None:
     must(patched_kernels, "SM80_SOFTWARE_E4M3FN", "software E4M3")
     must(patched_kernels, "index_q_fp8_storage", "byte-addressed index Q")
     must(patched_sparse, "_sm80_fp8_fp4_mqa_logits", "Triton indexer fallback")
+    must(
+        patched_sparse,
+        "SM80_RAGGED_INDEXER_DECODE_FIX",
+        "upstream #52500 ragged decode path",
+    )
+    must(
+        patched_sparse,
+        "elif needs_padded_path:",
+        "upstream #52500 ragged decode pack",
+    )
     must_not(
         patched_sparse,
         "Sparse Attention Indexer CUDA op requires DeepGEMM",
