@@ -156,6 +156,31 @@ Upstream auto block-size selection fix.  The production launcher already pins
 `--block-size 64`, which is supported by both the DSA indexer and
 `TRITON_MLA_SPARSE`.
 
+## Observed A100 CUDA-graph profiling OOM
+
+On the target 2-node A100 deployment, PP0 loaded successfully at approximately
+47.05 GiB per rank, then failed before KV-cache allocation inside
+`profile_cudagraph_memory() -> capture_model()`.  The first PIECEWISE capture
+descriptor exhausted the remaining device memory (20 MiB allocation attempted
+with only ~16.8 MiB free).
+
+This is not a model-weight load failure and not evidence of a sparse-MLA kernel
+numerical failure.  vLLM sorts CUDA-graph capture descriptors largest-first; with
+`max_cudagraph_capture_size=32`, the automatically generated PIECEWISE set is
+`[32, 24, 16, 8, 4, 2, 1]`, so failure at 0/7 means the 32-token PIECEWISE
+warmup itself is too expensive for the full FP8 checkpoint on PP0.
+
+Production default is therefore:
+
+```text
+cudagraph_mode             = FULL_DECODE_ONLY
+max_cudagraph_capture_size = 32
+```
+
+Pure uniform decode keeps full CUDA graphs; prefill and mixed batches run
+without PIECEWISE graphs. This is the vLLM-supported memory-saving graph mode
+for workloads where PIECEWISE capture is too expensive.
+
 ## Open memory-risk item: #58068
 
 #58068 is **not a demonstrated SM80 correctness failure** and is not
