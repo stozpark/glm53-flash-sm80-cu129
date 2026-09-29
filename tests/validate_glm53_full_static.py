@@ -65,8 +65,8 @@ def main() -> None:
         "--pipeline-parallel-size 2",
         'PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"',
         'MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"',
-        'CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-NONE}"',
-        "--compilation-config",
+        "RUN_GPU_SMOKE=\"\${RUN_GPU_SMOKE:-auto}\"",
+        "--compilation-config '{\"cudagraph_mode\":\"NONE\"}'",
         '"backend":"TRITON_MLA_SPARSE"',
         "--kv-cache-dtype bfloat16",
         "--tool-call-parser glm47",
@@ -76,6 +76,7 @@ def main() -> None:
         must(launcher, needle, "launcher")
     for forbidden in (
         "--max-cudagraph-capture-size",
+        "CUDAGRAPH_MODE=",
         "--linear-backend",
         "--moe-backend",
         "--enable-prefix-caching",
@@ -182,6 +183,11 @@ def main() -> None:
     cache_cfg = (vllm / "config/cache.py").read_text()
     must(cache_cfg, "enable_prefix_caching: bool = True", "prefix caching default")
     must(launcher, "--kv-cache-dtype bfloat16", "SM80 BF16 MLA KV override")
+    must(
+        launcher,
+        'smoke.${EXPECTED_PORT_REVISION}.gpu${first_gpu}.ok',
+        "revision-scoped one-time GPU smoke stamp",
+    )
 
     vllm_cfg = (vllm / "config/vllm.py").read_text()
     b0 = vllm_cfg.index("DEFAULT_BREAKABLE_CUDAGRAPH_ARCHITECTURES")
