@@ -7,7 +7,7 @@ Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 - base image: vLLM 0.30.0 / CUDA 13.0
 - architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
 - attention: DeepSeek-V3.2 DSA sparse MLA
-- port revision: `glm53-full-sm80-cu130-v030-r20260929-12`
+- port revision: `glm53-full-sm80-cu130-v030-r20260929-13`
 
 The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
 
@@ -60,7 +60,7 @@ the heavier stage.
 - DSA index Q/K and the generic fused MQA-query pack use software E4M3FN byte
   encoding on SM80.
 - The complete `_fused_q_kernel` contains no native `tl.float8e4nv`
-  conversion after the r12 patch.
+  conversion after the r13 patch.
 - sparse MLA and indexer pages use an exact 64-token block size.
 - physical sparse-MLA indices use int64 address arithmetic for long context.
 
@@ -81,7 +81,7 @@ the heavier stage.
 - **#49844 avoidance**: vLLM 0.30 already classifies `GlmMoeDsaForCausalLM`
   as a breakable-CUDA-graph architecture and disables Inductor compilation for
   that path. Target A100 profiling exhausted the remaining HBM even before
-  serving, so the startup-safe r12 launcher explicitly selects
+  serving, so the startup-safe r13 launcher explicitly selects
   `cudagraph_mode=NONE`.
 - **#52500**: use the padded pack/unpack path for ragged warmup/mixed decode
   batches even when metadata incorrectly reports `requires_padding=False`.
@@ -157,7 +157,7 @@ requirement for this port.
 
 ### #49845
 
-Upstream auto block-size selection fix. The r12 launcher does not pin
+Upstream auto block-size selection fix. The r13 launcher does not pin
 `--block-size`; the selected DSA/indexer backend advertises its exact
 64-token contract and vLLM resolves it automatically. Target-hardware logs
 confirm `DEEPSEEK_V32_INDEXER` selected block size 64.
@@ -181,7 +181,7 @@ Root cause: r10 made the index-Q/index-K quantizers SM80-safe but the
 `tl.float8e4nv` casts. The old GPU smoke only exercised
 `quantize_mqa=False`, so the gap escaped the preflight.
 
-r12 closes both sides of the issue:
+r13 closes both sides of the issue:
 
 - `--kv-cache-dtype bfloat16` is explicit in the A100 launcher, matching the
   `TRITON_MLA_SPARSE` BF16 main-KV contract and preventing FP8 query
@@ -212,7 +212,7 @@ warmup itself is too expensive for the full FP8 checkpoint on PP0.
 
 The intermediate `FULL_DECODE_ONLY / max_capture=32` mitigation was still
 not a sufficiently conservative bring-up contract: vLLM profiles CUDA-graph
-memory for every mode except `NONE`.  The r12 startup baseline is therefore:
+memory for every mode except `NONE`.  The r13 startup baseline is therefore:
 
 ```text
 cudagraph_mode = NONE
@@ -330,7 +330,7 @@ The source audit cannot validate:
 - Marlin checkpoint load/repack peak memory;
 - NCCL/Gloo initialization across the two physical nodes;
 - TP8 x PP2 full checkpoint initialization;
-- CUDA-graph performance on A100 (r12 intentionally runs graph-free after
+- CUDA-graph performance on A100 (r13 intentionally runs graph-free after
   target-hardware graph profiling exhausted HBM);
 - prefix-cache behavior with real requests;
 - runtime allocator fragmentation during 64K/128K prefills;
