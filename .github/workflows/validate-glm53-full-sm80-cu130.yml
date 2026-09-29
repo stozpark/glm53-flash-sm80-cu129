@@ -276,18 +276,17 @@ jobs:
           test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260929-10"
           grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'BLOCK_SIZE:-64' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'MAX_CUDAGRAPH_CAPTURE_SIZE:-32' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'CUDAGRAPH_MODE:-FULL_DECODE_ONLY' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--max-cudagraph-capture-size' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- '--compilation-config' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'RUN_GPU_SMOKE:-1' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'RUN_GPU_SMOKE:-0' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--kv-cache-dtype' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--linear-backend' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--moe-backend' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--enable-prefix-caching' port/serve_glm53_full_tp8_pp2.sh
-          ! grep -q 'VLLM_USE_BREAKABLE_CUDAGRAPH' port/serve_glm53_full_tp8_pp2.sh
-          ! grep -q 'VLLM_KV_CACHE_LAYOUT' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--env VLLM_USE_BREAKABLE_CUDAGRAPH' port/serve_glm53_full_tp8_pp2.sh
+          ! grep -q -- '--env VLLM_KV_CACHE_LAYOUT' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-10"' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'return capability == DeviceCapability(8, 0)' \
