@@ -237,9 +237,45 @@ def _fp8_ue8m0_quantize(vals):
 
 
 def patch_sparse_indexer(text: str) -> str:
+    def patch_ragged_decode(text: str) -> str:
+        marker = "SM80_RAGGED_INDEXER_DECODE_FIX"
+        if marker in text:
+            return text
+
+        old = """        decode_lens = decode_metadata.decode_lens
+        if num_decode_tokens == 0:
+"""
+        new = """        decode_lens = decode_metadata.decode_lens
+        # SM80_RAGGED_INDEXER_DECODE_FIX: backport upstream #52500.  A
+        # warmup/mixed decode batch can be ragged even when metadata does not
+        # request padding.  Never reshape such a token stream as uniform.
+        needs_padded_path = decode_metadata.requires_padding or (
+            num_decode_tokens % decode_lens.shape[0] != 0
+        )
+        if num_decode_tokens == 0:
+"""
+        text = replace_once(
+            text, old, new, "sparse indexer: ragged decode path detection"
+        )
+        text = replace_once(
+            text,
+            "        elif decode_metadata.requires_padding:\n",
+            "        elif needs_padded_path:\n",
+            "sparse indexer: ragged decode pack",
+        )
+        text = replace_once(
+            text,
+            "        if decode_metadata.requires_padding:\n"
+            "            # if padded, we need to unpack\n",
+            "        if needs_padded_path:\n"
+            "            # if padded, we need to unpack\n",
+            "sparse indexer: ragged decode unpack",
+        )
+        return text
+
     marker = "_sm80_fp8_fp4_mqa_logits"
     if marker in text:
-        return text
+        return patch_ragged_decode(text)
 
     old_import = """from vllm.utils.deep_gemm import (
     fp8_fp4_mqa_logits,
@@ -414,7 +450,7 @@ def _sm80_fp8_fp4_paged_mqa_logits(
 
     if "has_deep_gemm()" in text:
         raise RuntimeError("sparse indexer: stale has_deep_gemm() remains")
-    return text
+    return patch_ragged_decode(text)
 
 
 def patch_piecewise_kv_binding(text: str) -> str:
