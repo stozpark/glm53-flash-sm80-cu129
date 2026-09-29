@@ -7,7 +7,7 @@ Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 - base image: vLLM 0.30.0 / CUDA 13.0
 - architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
 - attention: DeepSeek-V3.2 DSA sparse MLA
-- port revision: `glm53-full-sm80-cu130-v030-r20260929-10`
+- port revision: `glm53-full-sm80-cu130-v030-r20260929-11`
 
 The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
 
@@ -55,9 +55,12 @@ the heavier stage.
 
 - PR #47629 lineage: Triton sparse MLA and FP8 paged-MQA fallback for SM80.
 - Native DeepGEMM use is gated by actual architecture support.
-- Main MLA KV is BF16.
-- DSA index Q/K use software E4M3FN byte encoding on SM80.
-- Active index-Q/index-K paths contain no native `tl.float8e4nv` conversion.
+- Main MLA KV is explicitly BF16 on SM80; this intentionally overrides the
+  official Hopper/Blackwell GLM-5.3 recipe's FP8 KV setting.
+- DSA index Q/K and the generic fused MQA-query pack use software E4M3FN byte
+  encoding on SM80.
+- The complete `_fused_q_kernel` contains no native `tl.float8e4nv`
+  conversion after the r11 patch.
 - sparse MLA and indexer pages use an exact 64-token block size.
 - physical sparse-MLA indices use int64 address arithmetic for long context.
 
@@ -71,7 +74,6 @@ the heavier stage.
 - **#51395 capability pattern**: `TRITON_MLA_SPARSE` declares
   `supports_dense_mha_prefill=False`; all prefills remain on the implemented
   sparse-MQA path.
-- **#54851 equivalent**: keep real KV-cache views and persistent slot mappings
   bound during PIECEWISE CUDA-graph capture.
 - **#48285 fixes**: normalize decode context lengths to the effective 1-D form
   and keep decode logits width tied to configured `max_model_len`.
@@ -79,8 +81,9 @@ the heavier stage.
   from Marlin params rather than casting activations to packed int32 weights.
 - **#49844 avoidance**: vLLM 0.30 already classifies `GlmMoeDsaForCausalLM`
   as a breakable-CUDA-graph architecture and disables Inductor compilation for
-  that path. The launcher does not duplicate this with an environment override;
-  it only selects `FULL_DECODE_ONLY` after the observed A100 PIECEWISE OOM.
+  that path. Target A100 profiling exhausted the remaining HBM even before
+  serving, so the startup-safe r11 launcher explicitly selects
+  `cudagraph_mode=NONE`.
 - **#52500**: use the padded pack/unpack path for ragged warmup/mixed decode
   batches even when metadata incorrectly reports `requires_padding=False`.
 
@@ -159,6 +162,40 @@ Upstream auto block-size selection fix.  The production launcher already pins
 `--block-size 64`, which is supported by both the DSA indexer and
 `TRITON_MLA_SPARSE`.
 
+## Observed A100 fused-Q SM80 compile failure
+
+A later target-hardware run progressed through backend resolution
+(`DEEPSEEK_V32_INDEXER` block size 64 and `LBHNC` layout) and failed during
+the ordinary vLLM profile forward, before graph capture, at:
+
+```text
+deepseek_v32/attention.py -> fused_q()
+_fused_q_kernel:
+    ql_nope_fp8 = (ql_nope / scale).to(tl.float8e4nv)
+
+ValueError: type fp8e4nv not supported in this architecture
+```
+
+Root cause: r10 made the index-Q/index-K quantizers SM80-safe but the
+`QUANTIZE_MQA=True` branch in the same fused-Q Triton kernel still used native
+`tl.float8e4nv` casts. The old GPU smoke only exercised
+`quantize_mqa=False`, so the gap escaped the preflight.
+
+r11 closes both sides of the issue:
+
+- `--kv-cache-dtype bfloat16` is explicit in the A100 launcher, matching the
+  `TRITON_MLA_SPARSE` BF16 main-KV contract and preventing FP8 query
+  quantization in the supported production configuration;
+- `TritonMLASparseImpl.supports_quant_query_input=False` is explicit and the
+  backend rejects unsupported main-KV dtypes;
+- all FP8 stores in `_fused_q_kernel` use software E4M3FN encoding into
+  byte-addressed storage, so an accidental FP8-query route no longer fails at
+  Triton compile time;
+- the GPU smoke now explicitly invokes `fused_q(..., quantize_mqa=True)` and
+  checks the packed NoPE+RoPE query against an FP8 reference;
+- the launcher automatically runs that hardware smoke once per port revision
+  before loading the 703.7 GiB checkpoint.
+
 ## Observed A100 CUDA-graph profiling OOM
 
 On the target 2-node A100 deployment, PP0 loaded successfully at approximately
@@ -173,16 +210,17 @@ numerical failure.  vLLM sorts CUDA-graph capture descriptors largest-first; wit
 `[32, 24, 16, 8, 4, 2, 1]`, so failure at 0/7 means the 32-token PIECEWISE
 warmup itself is too expensive for the full FP8 checkpoint on PP0.
 
-Production default is therefore:
+The intermediate `FULL_DECODE_ONLY / max_capture=32` mitigation was still
+not a sufficiently conservative bring-up contract: vLLM profiles CUDA-graph
+memory for every mode except `NONE`.  The r11 startup baseline is therefore:
 
 ```text
-cudagraph_mode             = FULL_DECODE_ONLY
-max_cudagraph_capture_size = 32
+cudagraph_mode = NONE
 ```
 
-Pure uniform decode keeps full CUDA graphs; prefill and mixed batches run
-without PIECEWISE graphs. This is the vLLM-supported memory-saving graph mode
-for workloads where PIECEWISE capture is too expensive.
+This deliberately gives up CUDA-graph speed until full TP8×PP2 serving and
+generation correctness are proven on A100. It removes graph profiling/capture
+from startup instead of iteratively trying smaller capture envelopes.
 
 ## Open memory-risk item: #58068
 
@@ -227,11 +265,11 @@ correctness fixes.
 | `v1/attention/backends/mla/triton_mla_sparse.py` | SM80 sparse-MLA backend; upstream v0.30 has no CUDA sparse MLA backend usable on A100 |
 | `v1/attention/ops/mqa_logits_triton.py` | DSA indexer MQA/paged-MQA fallback because DeepGEMM is unsupported on SM80 |
 | `v1/attention/ops/triton_mla_sparse_kernel.py` | sparse MLA attention kernel for SM80 |
-| `v1/attention/ops/fp8_sm80.py` | portable E4M3FN encode for the v0.30 fused index-Q/index-K path; native Triton FP8 conversion does not compile on SM80 |
+| `v1/attention/ops/fp8_sm80.py` | portable E4M3FN encode for fused index-Q/index-K and fused MQA-query packing; native Triton FP8 conversion does not compile on SM80 |
 | `v1/attention/backends/registry.py` | register `TRITON_MLA_SPARSE` |
 | `v1/attention/backends/mla/indexer.py` | gate DeepGEMM by actual hardware support instead of importability |
 | `model_executor/layers/sparse_attn_indexer.py` | route prefill/decode logits to Triton on SM80; includes #48285 and #52500 correctness fixes |
-| `models/deepseek_v32/common/kernels.py` | make the current v0.30 fused index-Q/index-K quantization path legal on SM80 |
+| `models/deepseek_v32/common/kernels.py` | make every active fused-Q/indexer FP8 store legal on SM80 while preserving FP8 byte semantics |
 | `models/deepseek_v32/attention.py` | backport #58594 Top-K backend propagation |
 | `model_executor/layers/attention/mla_attention.py` | publish sparse-MLA packed-block row alignment required by the Triton reader |
 | `v1/kv_cache_interface.py`, `v1/core/kv_cache_utils.py` | carry and honor that physical block-stride alignment (#55528 lineage) |
@@ -297,15 +335,15 @@ The source audit cannot validate:
 - Marlin checkpoint load/repack peak memory;
 - NCCL/Gloo initialization across the two physical nodes;
 - TP8 x PP2 full checkpoint initialization;
-- CUDA-graph capture/replay on all workers (the first target-hardware attempt
-  OOMed during `profile_cudagraph_memory()` with the default graph envelope;
-  the production launcher now caps `--max-cudagraph-capture-size` at 32);
+- CUDA-graph performance on A100 (r11 intentionally runs graph-free after
+  target-hardware graph profiling exhausted HBM);
 - prefix-cache behavior with real requests;
 - runtime allocator fragmentation during 64K/128K prefills;
 - end-to-end generated-token correctness.
 
-The production launcher runs the A100 GPU smoke on each node before starting
-the full server and rejects a stale SIF by `PORT_REVISION`.
+The production launcher runs the A100 GPU smoke once per `PORT_REVISION` on
+each node before the expensive full-model load, caches a success stamp, and
+rejects a stale SIF by `PORT_REVISION`.
 
 ## Release gate
 
