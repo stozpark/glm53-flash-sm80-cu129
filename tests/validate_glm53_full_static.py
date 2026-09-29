@@ -65,7 +65,7 @@ def main() -> None:
         "--pipeline-parallel-size 2",
         'PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"',
         'MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"',
-        "RUN_GPU_SMOKE=\"\${RUN_GPU_SMOKE:-auto}\"",
+        'RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-auto}"',
         "--compilation-config '{\"cudagraph_mode\":\"NONE\"}'",
         '"backend":"TRITON_MLA_SPARSE"',
         "--kv-cache-dtype bfloat16",
