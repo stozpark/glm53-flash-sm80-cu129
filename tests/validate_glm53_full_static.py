@@ -248,6 +248,16 @@ def main() -> None:
     must(patched_kernels, "SM80_SOFTWARE_E4M3FN_MQA", "software E4M3 MQA")
     must(patched_kernels, "index_q_fp8_storage", "byte-addressed index Q")
     must(patched_kernels, "mqa_q_fp8_storage", "byte-addressed MQA query")
+    must(
+        patched_kernels,
+        "q_pe_out = q_pe",
+        "SM80-safe BF16 dummy pointer for fused-Q signature",
+    )
+    must_not(
+        patched_kernels,
+        "q_pe_out = mqa_q_fp8",
+        "FP8 pointer leaked into Triton fused-Q signature",
+    )
     must(patched_sparse, "_sm80_fp8_fp4_mqa_logits", "Triton indexer fallback")
     must(
         patched_sparse,
