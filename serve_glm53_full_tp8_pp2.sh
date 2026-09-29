@@ -92,6 +92,19 @@ runtime_bin() {
 }
 
 preflight() {
+  # Keep the launch contract deterministic. These host variables can override
+  # the audited SM80 path or disable Marlin auto-selection.
+  local var
+  for var in \
+    VLLM_ATTENTION_BACKEND \
+    VLLM_KV_CACHE_LAYOUT \
+    VLLM_USE_BREAKABLE_CUDAGRAPH \
+    VLLM_USE_DEEP_GEMM \
+    VLLM_MOE_USE_DEEP_GEMM \
+    VLLM_BATCH_INVARIANT; do
+    [[ -z "${!var:-}" ]] || die "unset conflicting host variable: ${var}"
+  done
+
   [[ -n "${MODEL_HOST_PATH}" ]] || die "set MODEL_HOST_PATH"
   [[ -n "${MASTER_ADDR}" ]] || die "set MASTER_ADDR to node0 routable address"
   [[ "${NODE_RANK}" == "0" || "${NODE_RANK}" == "1" ]] ||
