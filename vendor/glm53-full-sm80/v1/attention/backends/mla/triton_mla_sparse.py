@@ -41,8 +41,11 @@ class TritonMLASparseMetadataBuilder(XPUMLASparseMetadataBuilder):
 
 
 class TritonMLASparseImpl(XPUMLASparseImpl):
-    """Triton sparse-MLA impl with split-KV decode (3-7× faster than the
-    single-pass XPU base for single-query decode on SM80 / SM121)."""
+    """Triton sparse-MLA impl with split-KV decode on SM80."""
+
+    # The SM80 kernel consumes BF16 Q/KV. Never request the generic GLM fused-Q
+    # FP8 MQA packing path for this backend.
+    supports_quant_query_input = False
 
     # Sparse-only implementation: MLAAttentionImpl.forward_mha() is not
     # implemented by XPUMLASparseImpl.  Advertising dense-MHA prefill causes
@@ -53,6 +56,12 @@ class TritonMLASparseImpl(XPUMLASparseImpl):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        if self.kv_cache_dtype not in ("auto", "bfloat16"):
+            raise ValueError(
+                "TRITON_MLA_SPARSE on SM80 requires BF16 main MLA KV cache; "
+                f"got kv_cache_dtype={self.kv_cache_dtype!r}"
+            )
+        self.supports_quant_query_input = False
         self._sm_count: int | None = None
         if self.topk_indices_buffer is not None:
             self._sm_count = num_compute_units(self.topk_indices_buffer.device.index)
@@ -127,7 +136,6 @@ class TritonMLASparseBackend(AttentionBackend):
     ]
     supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
         "auto",
-        "float16",
         "bfloat16",
     ]
 
