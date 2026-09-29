@@ -278,7 +278,7 @@ jobs:
           bash -n port/serve_glm53_full_tp16.sh
           grep -q 'sm80_glm53_full_kernel_smoke.py' port/Singularity.glm53-full-sm80.def
           grep -q 'PORT_REVISION /opt/glm53-full-sm80/PORT_REVISION' port/Singularity.glm53-full-sm80.def
-          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260923-7"
+          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260923-8"
           grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'BLOCK_SIZE:-64' port/serve_glm53_full_tp8_pp2.sh
@@ -286,9 +286,10 @@ jobs:
           grep -q 'ENFORCE_EAGER:-0' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'RUN_GPU_SMOKE:-1' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'VLLM_KV_CACHE_LAYOUT=LBHNC' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260923-7"' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260923-8"' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'return capability == DeviceCapability(8, 0)' \
             port/vendor/glm53-full-sm80/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'index_rope_interleave=True' port/tests/sm80_glm53_full_kernel_smoke.py
+          ! grep -q 'interleave=False' port/tests/sm80_glm53_full_kernel_smoke.py
           echo CUDA13_PROFILE=PASS
