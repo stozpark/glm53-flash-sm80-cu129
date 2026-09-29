@@ -57,30 +57,35 @@ def main() -> None:
     ]
     assert moe_per_stage == [39, 36]
 
-    # Production launcher invariants.
+    # Production launcher invariants: official GLM-5.3 serving features plus
+    # only SM80 / 2-node requirements.
     for needle in (
         "--distributed-executor-backend mp",
         "--tensor-parallel-size 8",
         "--pipeline-parallel-size 2",
         'PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"',
         'BLOCK_SIZE="${BLOCK_SIZE:-64}"',
-        'ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"',
-        'ENFORCE_EAGER="${ENFORCE_EAGER:-0}"',
+        'MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"',
         'MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"',
         'CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"',
         "--compilation-config",
-        "--kv-cache-dtype bfloat16",
         '"backend":"TRITON_MLA_SPARSE"',
-        "--env VLLM_USE_BREAKABLE_CUDAGRAPH=1",
-        "--env VLLM_KV_CACHE_LAYOUT=LBHNC",
-        "--linear-backend marlin",
-        "--moe-backend marlin",
         "--tool-call-parser glm47",
         "--reasoning-parser glm47",
+        "--enable-auto-tool-choice",
     ):
         must(launcher, needle, "launcher")
-    must_not(launcher, "--speculative-config", "MTP is intentionally not enabled")
-    must_not(launcher, "_sm80_pp_topk_relay_buf", "launcher")
+    for forbidden in (
+        "--kv-cache-dtype",
+        "--linear-backend",
+        "--moe-backend",
+        "--enable-prefix-caching",
+        "--env VLLM_USE_BREAKABLE_CUDAGRAPH",
+        "--env VLLM_KV_CACHE_LAYOUT",
+        "--speculative-config",
+        "_sm80_pp_topk_relay_buf",
+    ):
+        must_not(launcher, forbidden, "minimal launcher")
 
     # Every critical launcher option must exist in the exact v0.30 parser.
     parser_text = (
@@ -95,12 +100,9 @@ def main() -> None:
         "--master-addr",
         "--master-port",
         "--headless",
-        "--kv-cache-dtype",
         "--attention-config",
-        "--linear-backend",
-        "--moe-backend",
         "--block-size",
-        "--enable-prefix-caching",
+        "--max-model-len",
         "--max-cudagraph-capture-size",
         "--compilation-config",
     ):
@@ -115,6 +117,8 @@ def main() -> None:
         "gpu_model_runner.py",
         "patch_47644",
         "reorder_batch_threshold = self.decode_threshold",
+        "def patch_cuda(",
+        "SM80_PIECEWISE_KV_BINDING_FIX",
     ):
         must_not(patcher, stale, "patcher")
 
@@ -161,6 +165,21 @@ def main() -> None:
     must(deepseek_model, "return torch.float32", "GLM FP32 MoE router")
     must(tool_parsers, '"glm47"', "GLM tool parser")
     must(reasoning_parsers, '"glm47"', "GLM reasoning parser")
+
+    # Launcher intentionally omits redundant defaults.
+    cache_cfg = (vllm / "config/cache.py").read_text()
+    platform_if = (vllm / "platforms/interface.py").read_text()
+    must(cache_cfg, "enable_prefix_caching: bool = True", "prefix caching default")
+    must(
+        platform_if,
+        'if cache_config.cache_dtype == "auto":',
+        "KV cache auto resolution",
+    )
+    must(
+        platform_if,
+        "kv_cache_dtype = model_config.dtype",
+        "KV cache auto uses model dtype",
+    )
 
     vllm_cfg = (vllm / "config/vllm.py").read_text()
     b0 = vllm_cfg.index("DEFAULT_BREAKABLE_CUDAGRAPH_ARCHITECTURES")
@@ -213,11 +232,6 @@ def main() -> None:
     patched_sparse = (
         vllm / "model_executor/layers/sparse_attn_indexer.py"
     ).read_text()
-    must(
-        patched_attention,
-        "SM80_PIECEWISE_KV_BINDING_FIX",
-        "PIECEWISE graph KV binding",
-    )
     must(
         patched_attention,
         "topk_backend=self.indexer.indexer_op.topk_backend",
@@ -337,9 +351,10 @@ def main() -> None:
     q0 = patched_kernels.index("def _fp8_ue8m0_quantize")
     q1 = patched_kernels.index("def _fp8_quant_and_cache_write", q0)
     must_not(patched_kernels[q0:q1], "tl.float8e4nv", "index-K active quantizer")
-    q0 = patched_kernels.index("def _fused_q_kernel")
-    q1 = patched_kernels.index("def fused_q(", q0)
-    must_not(patched_kernels[q0:q1], ".to(tl.float8e4nv)", "index-Q active kernel")
+    # BF16 main KV makes quantize_mqa=False. The stock MQA-query FP8
+    # branches may retain native FP8 casts, but index-Q storage itself must be
+    # byte-addressed and the active index quantizer must be software E4M3FN.
+    must(patched_kernels, "index_q_fp8_storage", "byte-addressed index-Q output")
 
     print("GLM53_FULL_SM80_STATIC_SEMANTICS=PASS")
 
