@@ -32,7 +32,6 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # A100 memory/correctness overrides. Everything else stays at the vLLM 0.30
 # / official GLM-5.3 defaults.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
-BLOCK_SIZE="${BLOCK_SIZE:-64}"
 MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"
 CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
@@ -227,9 +226,10 @@ build_args() {
     # vLLM's default "auto" -> model BF16; FP8 KV is not supported by this backend.
     --attention-config '{"backend":"TRITON_MLA_SPARSE"}'
 
-    # A100-specific limits. v0.30 predates the all-backend block-size resolver
-    # fix (#49845), so 64 is explicit. PIECEWISE graph profiling OOMs on the
-    # full FP8 checkpoint; keep full graphs only for uniform decode.
+    # A100-specific limits. The SM80 attention backend advertises its exact
+    # 64-token page contract, so block size stays on vLLM auto-resolution.
+    # PIECEWISE graph profiling OOMs on the full FP8 checkpoint; keep full
+    # graphs only for uniform decode.
     --max-model-len "${MAX_MODEL_LEN}"
     --max-cudagraph-capture-size "${MAX_CUDAGRAPH_CAPTURE_SIZE}"
     --compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"
