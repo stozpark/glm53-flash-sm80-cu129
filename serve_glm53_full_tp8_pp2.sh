@@ -46,7 +46,7 @@ BLOCK_SIZE="${BLOCK_SIZE:-64}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-1}"
-EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260923-8"
+EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-9"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -147,7 +147,7 @@ from pathlib import Path
 
 assert version("vllm") == "0.30.0", version("vllm")
 revision = Path("/opt/glm53-full-sm80/PORT_REVISION").read_text().strip()
-assert revision == "glm53-full-sm80-cu130-v030-r20260923-8", revision
+assert revision == "glm53-full-sm80-cu130-v030-r20260929-9", revision
 root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 if not root.exists():
     import importlib.util
@@ -171,6 +171,7 @@ checks = {
     ],
     root / "model_executor/layers/sparse_attn_indexer.py": [
         "_sm80_fp8_fp4_mqa_logits",
+        "SM80_RAGGED_INDEXER_DECODE_FIX",
     ],
 }
 for path, markers in checks.items():
