@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Full zai-org/GLM-5.3 on 2 x (8 x A100/A800 SM80), vLLM 0.30.0.
 #
-# This launcher intentionally stays close to the official GLM-5.3 recipe.
-# Only the options required by 2-node placement or by the SM80 port are added.
+# Minimal production launcher: official GLM-5.3 serving features plus only
+# the options required by 2-node TP8xPP2 placement and the SM80 port.
 #
 # Required on both nodes:
 #   MODEL_HOST_PATH=/models/GLM-5.3
@@ -29,26 +29,15 @@ MASTER_PORT="${MASTER_PORT:-29501}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.3}"
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 
-# Production context default for BF16 main MLA KV on 80GB A100.
-# GLM-5.3 supports longer contexts, but BF16 KV scales linearly with context.
+# A100 memory/correctness overrides. Everything else stays at the vLLM 0.30
+# / official GLM-5.3 defaults.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
-
-# Production defaults. Keep decode CUDA graphs and prefix caching enabled.
-# Full GLM-5.3 FP8 leaves much less graph-capture headroom on A100 than the
-# smaller NVFP4 variants. PIECEWISE graph profiling can exhaust PP0 before KV
-# allocation, so default to FULL_DECODE_ONLY: pure decode retains full CUDA
-# graphs while prefill/mixed batches run eagerly. Cap decode capture at 32;
-# larger decode batches transparently use the non-captured path.
-ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
-MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
+BLOCK_SIZE="${BLOCK_SIZE:-64}"
 MAX_CUDAGRAPH_CAPTURE_SIZE="${MAX_CUDAGRAPH_CAPTURE_SIZE:-32}"
 CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"
-BLOCK_SIZE="${BLOCK_SIZE:-64}"
-ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-1}"
-EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-9"
+EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-10"
 
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
@@ -132,12 +121,8 @@ preflight() {
   echo "sif=${SIF_PATH}"
   echo "pp_layer_partition=${PP_LAYER_PARTITION}"
   echo "block_size=${BLOCK_SIZE}"
-  echo "max_num_seqs=${MAX_NUM_SEQS:-vllm-default}"
-  echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS:-vllm-default}"
   echo "max_cudagraph_capture_size=${MAX_CUDAGRAPH_CAPTURE_SIZE}"
   echo "cudagraph_mode=${CUDAGRAPH_MODE}"
-  echo "prefix_caching=${ENABLE_PREFIX_CACHING}"
-  echo "enforce_eager=${ENFORCE_EAGER}"
   echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
 }
 
@@ -150,7 +135,7 @@ from pathlib import Path
 
 assert version("vllm") == "0.30.0", version("vllm")
 revision = Path("/opt/glm53-full-sm80/PORT_REVISION").read_text().strip()
-assert revision == "glm53-full-sm80-cu130-v030-r20260929-9", revision
+assert revision == "glm53-full-sm80-cu130-v030-r20260929-10", revision
 root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 if not root.exists():
     import importlib.util
@@ -218,29 +203,19 @@ build_args() {
     --master-addr "${MASTER_ADDR}"
     --master-port "${MASTER_PORT}"
 
-    # SM80 port differences from the official Hopper/B300 recipe.
-    --kv-cache-dtype bfloat16
+    # Only backend override required by the SM80 port. KV dtype is left at
+    # vLLM's default "auto" -> model BF16; FP8 KV is not supported by this backend.
     --attention-config '{"backend":"TRITON_MLA_SPARSE"}'
-    --linear-backend marlin
-    --moe-backend marlin
 
-    # Production A100 baseline. vLLM v0.30.0 OpenAI-server defaults are
-    # 2048 batched tokens / 128 seqs. Limit only CUDA-graph capture memory;
-    # scheduler concurrency remains at the vLLM default unless overridden.
+    # A100-specific limits. v0.30 predates the all-backend block-size resolver
+    # fix (#49845), so 64 is explicit. PIECEWISE graph profiling OOMs on the
+    # full FP8 checkpoint; keep full graphs only for uniform decode.
     --max-model-len "${MAX_MODEL_LEN}"
     --block-size "${BLOCK_SIZE}"
     --max-cudagraph-capture-size "${MAX_CUDAGRAPH_CAPTURE_SIZE}"
     --compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"
   )
 
-  [[ -n "${MAX_NUM_SEQS}" ]] && VLLM_ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
-  [[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] \
-    && VLLM_ARGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
-
-  [[ "${ENABLE_PREFIX_CACHING}" == "1" ]] \
-    && VLLM_ARGS+=(--enable-prefix-caching) \
-    || VLLM_ARGS+=(--no-enable-prefix-caching)
-  [[ "${ENFORCE_EAGER}" == "1" ]] && VLLM_ARGS+=(--enforce-eager)
   [[ -n "${API_KEY}" ]] && VLLM_ARGS+=(--api-key "${API_KEY}")
 
   if [[ "${NODE_RANK}" == "0" ]]; then
@@ -269,14 +244,6 @@ run_server() {
     # split starts PP1 on a shared-index layer (39); 42/36 starts it on the
     # next full-indexer layer and removes cross-stage Top-K state.
     --env VLLM_PP_LAYER_PARTITION="${PP_LAYER_PARTITION}"
-    # GlmMoeDsa is a v0.30 breakable-CUDA-graph architecture. Force this
-    # explicitly so a host environment cannot re-enable the unsafe
-    # Inductor+PP graph combination reported in #49844.
-    --env VLLM_USE_BREAKABLE_CUDAGRAPH=1
-    # V3.2 sparse MLA requires a layer-compact cache layout.  Pin the
-    # known-good legacy HND layout so an inherited host BLHNC setting
-    # cannot trigger mixed MLA/indexer block-stride addressing (#55431).
-    --env VLLM_KV_CACHE_LAYOUT=LBHNC
   )
 
   # Only pin NCCL/Gloo to an interface when the user asks for it. vLLM's
