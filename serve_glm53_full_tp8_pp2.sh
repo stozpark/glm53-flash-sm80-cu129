@@ -32,9 +32,8 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # A100 memory/correctness overrides. Everything else stays at the vLLM 0.30
 # / official GLM-5.3 defaults.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
-CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-NONE}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
-RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-0}"
+RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-auto}"
 EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260929-11"
 
 API_KEY="${API_KEY:-}"
@@ -131,8 +130,12 @@ preflight() {
   echo "model=${MODEL_HOST_PATH}"
   echo "sif=${SIF_PATH}"
   echo "pp_layer_partition=${PP_LAYER_PARTITION}"
-  echo "cudagraph_mode=${CUDAGRAPH_MODE}"
+  echo "cudagraph_mode=NONE"
   echo "run_gpu_smoke=${RUN_GPU_SMOKE}"
+  case "${RUN_GPU_SMOKE}" in
+    auto|0|1) ;;
+    *) die "RUN_GPU_SMOKE must be auto, 0, or 1" ;;
+  esac
 }
 
 validate_sif_runtime() {
@@ -190,16 +193,24 @@ PY
 }
 
 run_gpu_smoke() {
-  [[ "${RUN_GPU_SMOKE}" == "1" ]] || return 0
-  local rt first_gpu
+  [[ "${RUN_GPU_SMOKE}" != "0" ]] || return 0
+  local rt first_gpu stamp
   rt="$(runtime_bin)"
   first_gpu="${GPUS%%,*}"
-  echo "Running SM80 numerical/JIT smoke on physical GPU ${first_gpu}..."
+  stamp="${RUN_DIR}/smoke.${EXPECTED_PORT_REVISION}.gpu${first_gpu}.ok"
+
+  if [[ "${RUN_GPU_SMOKE}" == "auto" && -f "${stamp}" ]]; then
+    echo "SM80 GPU smoke already passed for ${EXPECTED_PORT_REVISION}; skipping."
+    return 0
+  fi
+
+  echo "Running one-time SM80 numerical/JIT smoke on physical GPU ${first_gpu}..."
   "${rt}" exec --nv \
     --env CUDA_VISIBLE_DEVICES="${first_gpu}" \
     --env PYTHONUNBUFFERED=1 \
     "${SIF_PATH}" \
     python3 /opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py
+  touch "${stamp}"
 }
 
 build_args() {
@@ -231,7 +242,7 @@ build_args() {
     # remaining 80GB headroom in target-hardware runs, so disable graphs until
     # the server is proven stable end-to-end.
     --max-model-len "${MAX_MODEL_LEN}"
-    --compilation-config "{\"cudagraph_mode\":\"${CUDAGRAPH_MODE}\"}"
+    --compilation-config '{"cudagraph_mode":"NONE"}'
   )
 
   [[ -n "${API_KEY}" ]] && VLLM_ARGS+=(--api-key "${API_KEY}")
