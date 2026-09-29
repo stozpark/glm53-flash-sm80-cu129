@@ -167,8 +167,16 @@ checks = {
         "index_q_fp8_storage",
     ],
     root / "models/deepseek_v32/attention.py": [
-        "SM80_PIECEWISE_KV_BINDING_FIX",
         "topk_backend=self.indexer.indexer_op.topk_backend",
+    ],
+    root / "model_executor/layers/attention/mla_attention.py": [
+        "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT",
+    ],
+    root / "v1/kv_cache_interface.py": [
+        "block_stride_alignment: int | None = None",
+    ],
+    root / "v1/core/kv_cache_utils.py": [
+        "SM80_MLA_STRIDE_ALIGNMENTS",
     ],
     root / "model_executor/layers/sparse_attn_indexer.py": [
         "_sm80_fp8_fp4_mqa_logits",
