@@ -186,7 +186,8 @@ def _fp8_ue8m0_quantize(vals):
         mqa_q = q_pe_out
 """
     new = """    if quantize_mqa:
-        # Byte-addressed storage avoids an unsupported Triton fp8e4nv store on SM80.
+        # SM80_SOFTWARE_E4M3FN_MQA: byte-addressed storage avoids an
+        # unsupported Triton fp8e4nv store on SM80.
         mqa_q_fp8_storage = torch.empty(
             q_pe.shape[0],
             q_pe.shape[1],
