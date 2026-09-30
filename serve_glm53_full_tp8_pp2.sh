@@ -26,6 +26,7 @@ NODE_RANK="${NODE_RANK:-}"
 
 PORT="${PORT:-8200}"
 MASTER_PORT="${MASTER_PORT:-29501}"
+RENDEZVOUS_PREFLIGHT_TIMEOUT="${RENDEZVOUS_PREFLIGHT_TIMEOUT:-180}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.3}"
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 
@@ -129,6 +130,7 @@ preflight() {
 
   echo "node_rank=${NODE_RANK}"
   echo "master=${MASTER_ADDR}:${MASTER_PORT}"
+  echo "master_ipv4=$(resolve_master_ipv4)"
   echo "local_ip=$(local_host_ip)"
   echo "net_iface=${NET_IFACE:-auto}"
   echo "gpus=${GPUS}"
@@ -286,7 +288,83 @@ select_sparse_topk_backends() {
   echo "prefill_topk_backend=${SM80_PREFILL_TOPK_BACKEND}"
 }
 
+sync_nodes_before_vllm() {
+  # Both nodes run all local SIF/GPU qualification before entering here.
+  # Use the *same* TCP endpoint that torch.distributed will use, then release
+  # it before starting vLLM. This catches a missing/failed follower, DNS
+  # mismatch, firewall, stale listener, or wrong MASTER_ADDR without making
+  # rank0 sit in TCPStore for 600 seconds with only 8/16 workers.
+  local master_ip local_ip
+  master_ip="$(resolve_master_ipv4)"
+  local_ip="$(local_host_ip)"
+
+  echo "rendezvous_preflight: rank=${NODE_RANK} local=${local_ip} master=${master_ip}:${MASTER_PORT}"
+
+  python3 - "${NODE_RANK}" "${master_ip}" "${MASTER_PORT}"     "${RENDEZVOUS_PREFLIGHT_TIMEOUT}" "${local_ip}" <<'PY'
+import socket
+import sys
+import time
+
+rank = int(sys.argv[1])
+master_ip = sys.argv[2]
+port = int(sys.argv[3])
+timeout = float(sys.argv[4])
+local_ip = sys.argv[5]
+deadline = time.monotonic() + timeout
+
+if rank == 0:
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind((master_ip, port))
+        srv.listen(1)
+        srv.settimeout(timeout)
+        conn, addr = srv.accept()
+        with conn:
+            conn.settimeout(10)
+            msg = conn.recv(256).decode("utf-8", "replace").strip()
+            if msg != "READY rank=1":
+                raise RuntimeError(f"unexpected follower handshake from {addr}: {msg!r}")
+            conn.sendall(b"GO\n")
+        print(f"RENDEZVOUS_PREFLIGHT=PASS follower={addr[0]}")
+    except Exception as exc:
+        raise SystemExit(
+            f"RENDEZVOUS_PREFLIGHT=FAIL rank0 master={master_ip}:{port}: {exc}"
+        )
+    finally:
+        srv.close()
+else:
+    last_error = None
+    while time.monotonic() < deadline:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        try:
+            # Bind to the same source address vLLM advertises for this node.
+            sock.bind((local_ip, 0))
+            sock.connect((master_ip, port))
+            sock.sendall(b"READY rank=1\n")
+            reply = sock.recv(32).decode("utf-8", "replace").strip()
+            if reply != "GO":
+                raise RuntimeError(f"unexpected leader reply: {reply!r}")
+            print("RENDEZVOUS_PREFLIGHT=PASS leader_reachable=1")
+            sock.close()
+            break
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+            time.sleep(1)
+    else:
+        raise SystemExit(
+            f"RENDEZVOUS_PREFLIGHT=FAIL rank1 source={local_ip} "
+            f"master={master_ip}:{port}: {last_error}"
+        )
+PY
+}
+
 build_args() {
+  local master_ip
+  master_ip="$(resolve_master_ipv4)"
+
   VLLM_ARGS=(
     vllm serve /models/GLM-5.3
 
@@ -302,7 +380,9 @@ build_args() {
     --pipeline-parallel-size 2
     --nnodes 2
     --node-rank "${NODE_RANK}"
-    --master-addr "${MASTER_ADDR}"
+    # Pass the already-validated IPv4 literal into the container. Avoid a
+    # second hostname-resolution path inside Apptainer/Singularity.
+    --master-addr "${master_ip}"
     --master-port "${MASTER_PORT}"
 
     # SM80-specific attention contract. The official GLM-5.3 recipe uses FP8
@@ -338,6 +418,7 @@ run_server() {
   validate_sif_runtime
   select_sparse_topk_backends
   run_gpu_smoke
+  sync_nodes_before_vllm
   build_args
 
   ENV_ARGS=(
