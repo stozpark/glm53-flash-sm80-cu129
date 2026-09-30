@@ -175,6 +175,9 @@ checks = {
         "topk_backend=self.indexer.indexer_op.topk_backend",
         "SM80_SPARSE_ONLY_PREFILL_TOPK_FIX",
     ],
+    root / "models/deepseek_v32/nvidia/model.py": [
+        "SM80_PERSIST_FP8_INDEXER_WK_PAIR",
+    ],
     root / "model_executor/layers/attention/mla_attention.py": [
         "SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD",
         "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT",
