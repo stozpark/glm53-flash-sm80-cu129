@@ -106,9 +106,11 @@ v0.30 릴리스 이후 merge된 full GLM-5.3/DSA 수정도 필요한 부분만 b
 - **#58594**: `sparse_attn_indexer()`에 실제 선택된 `topk_backend` 전달
 - **#55528/#56254 최소 backport**: `TRITON_MLA_SPARSE`의 packed BF16 MLA
   physical block stride를 576-element row(1152 bytes) 경계에 정렬
-- **#51395 패턴**: Triton sparse backend는 dense `forward_mha()`를 구현하지
-  않으므로 `supports_dense_mha_prefill=False`를 명시하고 short/chunked
-  prefill도 지원되는 sparse-MQA 경로로 보냄
+- **#51395 패턴 + v0.30 shared-MLA guard**: Triton sparse backend는 dense
+  `forward_mha()`를 구현하지 않으므로
+  `supports_dense_mha_prefill=False`를 명시하고, shared
+  `_use_sparse_mha()`가 `metadata.prefill`을 읽기 전에 capability를
+  확인하도록 하여 XPU-derived sparse metadata를 안전하게 sparse-MQA로 보냄
 
 ## TP8 x PP2 partition
 
@@ -194,6 +196,7 @@ GPU=0 bash ./verify_glm53_full_sm80_sif.sh \
 PASS 항목:
 
 ```text
+SM80_SPARSE_MLA_METADATA_GUARD=PASS
 SM80_FUSED_NORM_ROPE_INDEX_K=PASS
 SM80_FUSED_Q_INDEX_Q=PASS
 SM80_FUSED_Q_MQA_FP8_PACK=PASS
@@ -267,7 +270,8 @@ GitHub CI에서 현재 다음을 모두 검증합니다.
 - `record_logical_topk_ready()` compatibility hook
 - #58594 Top-K backend propagation
 - #55528/#56254 packed MLA block-stride alignment
-- sparse-only backend의 dense-MHA prefill 비활성화 (#51395 패턴)
+- sparse-only backend의 dense-MHA prefill 비활성화 및 metadata-prefill
+  capability guard
 - #48285의 2-D decode seq_lens / fixed logits width 회귀 방지
 - #47522의 Marlin packed-int32 chunked-prefill dtype 회귀 방지
 - A100 startup baseline에서 CUDA graph를 완전히 비활성화해 observed graph-profile OOM 회피
