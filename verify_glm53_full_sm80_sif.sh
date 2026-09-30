@@ -18,8 +18,15 @@ else
   exit 1
 fi
 
-exec "${R}" exec --nv \
-  --env CUDA_VISIBLE_DEVICES="${GPU}" \
-  --env PYTHONUNBUFFERED=1 \
-  "${SIF}" \
+COMMON=(
+  exec --nv
+  --env CUDA_VISIBLE_DEVICES="${GPU}"
+  --env PYTHONUNBUFFERED=1
+  "${SIF}"
+)
+
+"${R}" "${COMMON[@]}" \
+  python3 /opt/glm53-full-sm80/sm80_sparse_indexer_topk_probe.py
+
+exec "${R}" "${COMMON[@]}" \
   python3 /opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py
