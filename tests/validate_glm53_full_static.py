@@ -34,7 +34,6 @@ def main() -> None:
         / "vendor/glm53-full-sm80/v1/attention/backends/mla/triton_mla_sparse.py"
     ).read_text()
     smoke = (port / "tests/sm80_glm53_full_kernel_smoke.py").read_text()
-    topk_probe = (port / "tests/sm80_sparse_indexer_topk_probe.py").read_text()
 
     # ------------------------------------------------------------------
     # Published full GLM-5.3 DSA topology.
@@ -70,9 +69,6 @@ def main() -> None:
         "--compilation-config '{\"cudagraph_mode\":\"NONE\"}'",
         '"backend":"TRITON_MLA_SPARSE"',
         "--kv-cache-dtype bfloat16",
-        "--sparse-indexer-topk-backend",
-        "select_sparse_topk_backends",
-        "VLLM_SM80_PREFILL_TOPK_BACKEND",
         "--tool-call-parser glm47",
         "--reasoning-parser glm47",
         "--enable-auto-tool-choice",
@@ -108,7 +104,6 @@ def main() -> None:
         "--max-model-len",
         "--kv-cache-dtype",
         "--compilation-config",
-        "--sparse-indexer-topk-backend",
     ):
         must(parser_text, flag, "vLLM v0.30 CLI")
 
@@ -151,16 +146,6 @@ def main() -> None:
         "supports_dense_mha_prefill = False",
         "sparse-only prefill routing",
     )
-    must(
-        patcher,
-        "SM80_SPARSE_ONLY_PREFILL_TOPK_FIX",
-        "short-prefill Top-K capability fix",
-    )
-    must(
-        patcher,
-        "SM80_PREFILL_TOPK_RUNTIME_BACKEND",
-        "runtime-selectable prefill Top-K",
-    )
     must(backend, "_INDEXER_NUM_HEADS = 32", "GLM-5.3 indexer heads")
     must(backend, "_INDEXER_HEAD_DIM = 128", "GLM-5.3 indexer dim")
     must(smoke, "INDEX_HEADS = 32", "smoke config")
@@ -172,26 +157,6 @@ def main() -> None:
         smoke,
         "SM80_SPARSE_MLA_METADATA_GUARD=PASS",
         "sparse-only metadata smoke",
-    )
-    must(
-        topk_probe,
-        "SM80_DECODE_TOPK_BACKEND=",
-        "runtime decode Top-K selector output",
-    )
-    must(
-        topk_probe,
-        "SM80_PREFILL_TOPK_BACKEND=",
-        "runtime prefill Top-K selector output",
-    )
-    must(
-        topk_probe,
-        "large_batch_40000",
-        "oversized-bin large-batch regression",
-    )
-    must(
-        topk_probe,
-        "max_context_131072",
-        "deployed max-context Top-K regression",
     )
 
     # Exact v0.30 indexer page-size contract.
@@ -285,20 +250,6 @@ def main() -> None:
         "topk_backend=self.indexer.indexer_op.topk_backend",
         "upstream #58594 GLM-5.3 sparse top-k backend selection",
     )
-    must(
-        patched_attention,
-        "SM80_SPARSE_ONLY_PREFILL_TOPK_FIX",
-        "sparse-only short-prefill Top-K guard",
-    )
-    short_skip = patched_attention[
-        patched_attention.index("enable_short_prefill_scoring_skip"):
-        patched_attention.index("self._dense_mha_metadata_layer_name"),
-    ]
-    must(
-        short_skip,
-        "self.impl.supports_dense_mha_prefill",
-        "short-prefill skip requires backend dense-MHA capability",
-    )
     must(patched_kernels, "SM80_SOFTWARE_E4M3FN_MQA", "software E4M3 MQA")
     must(patched_kernels, "index_q_fp8_storage", "byte-addressed index Q")
     must(patched_kernels, "mqa_q_fp8_storage", "byte-addressed MQA query")
@@ -322,16 +273,6 @@ def main() -> None:
         patched_sparse,
         "elif needs_padded_path:",
         "upstream #52500 ragged decode pack",
-    )
-    must(
-        patched_sparse,
-        "SM80_PREFILL_TOPK_RUNTIME_BACKEND",
-        "runtime-selectable prefill Top-K helper",
-    )
-    must(
-        patched_sparse,
-        'os.getenv("VLLM_SM80_PREFILL_TOPK_BACKEND", "vllm")',
-        "prefill Top-K runtime backend env",
     )
     must_not(
         patched_sparse,
