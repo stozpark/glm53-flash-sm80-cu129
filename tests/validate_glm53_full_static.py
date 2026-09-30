@@ -153,6 +153,11 @@ def main() -> None:
     assert smoke.count("interleave=True") >= 3
     must(smoke, "quantize_mqa=True", "SM80 fused-Q MQA smoke")
     must(smoke, "SM80_FUSED_Q_MQA_FP8_PACK=PASS", "SM80 MQA pack smoke")
+    must(
+        smoke,
+        "SM80_SPARSE_MLA_METADATA_GUARD=PASS",
+        "sparse-only metadata smoke",
+    )
 
     # Exact v0.30 indexer page-size contract.
     indexer = (vllm / "v1/attention/backends/mla/indexer.py").read_text()
@@ -314,6 +319,18 @@ def main() -> None:
     ).read_text()
     kv_interface = (vllm / "v1/kv_cache_interface.py").read_text()
     kv_utils = (vllm / "v1/core/kv_cache_utils.py").read_text()
+    must(
+        mla_attention,
+        "SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD",
+        "sparse-only MLA metadata guard",
+    )
+    use_sparse_mha = mla_attention[
+        mla_attention.index("def _use_sparse_mha"):
+        mla_attention.index("def process_weights_after_loading")
+    ]
+    assert use_sparse_mha.index("supports_dense_mha_prefill") < use_sparse_mha.index(
+        "prefill = attn_metadata.prefill"
+    ), "dense-prefill capability guard must precede metadata.prefill access"
     must(
         mla_attention,
         "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT",
