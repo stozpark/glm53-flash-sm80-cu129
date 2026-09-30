@@ -31,7 +31,8 @@ PY
         "${VLLM_ROOT}/v1/core/kv_cache_utils.py" \
         "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py" \
         "${VLLM_ROOT}/v1/attention/ops/mqa_logits_triton.py" \
-        "${VLLM_ROOT}/v1/attention/ops/triton_mla_sparse_kernel.py"
+        "${VLLM_ROOT}/v1/attention/ops/triton_mla_sparse_kernel.py" \
+        /opt/glm53-full-sm80/sm80_sparse_indexer_topk_probe.py
     grep -q 'supports_dense_mha_prefill = False' "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py"
     grep -q 'return (KVCacheLayout.LBHNC,)' "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py"
     grep -q 'topk_backend=self.indexer.indexer_op.topk_backend' "${VLLM_ROOT}/models/deepseek_v32/attention.py"
