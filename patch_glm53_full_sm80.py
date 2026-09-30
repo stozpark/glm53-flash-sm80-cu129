@@ -563,6 +563,29 @@ def _sm80_fp8_fp4_paged_mqa_logits(
     return patch_prefill_topk(patch_ragged_decode(text))
 
 
+def patch_deepseek_nvidia_weight_loader(text: str) -> str:
+    """Backport upstream #59223 pending FP8 indexer-WK pair persistence."""
+    marker = "SM80_PERSIST_FP8_INDEXER_WK_PAIR"
+    if marker in text:
+        return text
+
+    old = """        _pending_wk_fp8: dict = {}
+        for name, loaded_weight in weights:
+"""
+    new = """        # SM80_PERSIST_FP8_INDEXER_WK_PAIR: checkpoint/load backends may split
+        # an FP8 indexer WK weight and weight_scale_inv across consecutive
+        # load_weights() calls. Keep the pending half on the model so the pair
+        # cannot be silently dropped at a call boundary (upstream #59223).
+        _pending_wk_fp8 = getattr(self, "_pending_indexer_wk_fp8", None)
+        if _pending_wk_fp8 is None:
+            self._pending_indexer_wk_fp8 = _pending_wk_fp8 = {}
+        for name, loaded_weight in weights:
+"""
+    return replace_once(
+        text, old, new, "deepseek NVIDIA: persist FP8 indexer WK pair"
+    )
+
+
 def patch_topk_backend(text: str) -> str:
     """Patch DSA Top-K routing for the SM80 sparse-only MLA backend."""
     marker = "topk_backend=self.indexer.indexer_op.topk_backend"
@@ -769,6 +792,10 @@ def main() -> None:
     patch_file(root / "v1/attention/backends/mla/indexer.py", patch_indexer_metadata)
     patch_file(root / "model_executor/layers/sparse_attn_indexer.py", patch_sparse_indexer)
     patch_file(root / "models/deepseek_v32/common/kernels.py", patch_deepseek_kernels)
+    patch_file(
+        root / "models/deepseek_v32/nvidia/model.py",
+        patch_deepseek_nvidia_weight_loader,
+    )
     patch_file(root / "models/deepseek_v32/attention.py", patch_topk_backend)
     patch_file(
         root / "model_executor/layers/attention/mla_attention.py",
