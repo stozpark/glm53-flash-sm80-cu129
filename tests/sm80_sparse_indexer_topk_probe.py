@@ -102,6 +102,23 @@ def _flashinfer(logits: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     return top_k_ragged_transform(logits, offsets, lengths, TOPK)
 
 
+def _torch_decode(logits: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    from vllm.model_executor.layers.indexer_topk import SparseIndexerTopk
+
+    out = torch.full(
+        (logits.shape[0], TOPK), -1, dtype=torch.int32, device=logits.device
+    )
+    SparseIndexerTopk("torch")(
+        logits,
+        lengths,
+        1,
+        out,
+        TOPK,
+        logits.shape[1],
+    )
+    return out
+
+
 def _prefill(logits: torch.Tensor, lengths: torch.Tensor, backend: str) -> torch.Tensor:
     from vllm.model_executor.layers.sparse_attn_indexer import (
         _sm80_top_k_per_row_prefill,
@@ -121,6 +138,68 @@ def _prefill(logits: torch.Tensor, lengths: torch.Tensor, backend: str) -> torch
         else:
             os.environ["VLLM_SM80_PREFILL_TOPK_BACKEND"] = old
     return out
+
+
+def _qualify_prefill(name: str, backend: str) -> bool:
+    """Validate exact prefill helper semantics, including non-zero row starts."""
+    try:
+        # Deployed width with zero starts.
+        logits, lengths = _make_case([131072, 131072], False)
+        ref = _reference(logits, lengths)
+        got = _prefill(logits, lengths, backend)
+        torch.cuda.synchronize()
+        if not _same_selected_set(got, ref, lengths):
+            print(f"{name}:max_context=FAIL")
+            return False
+        print(f"{name}:max_context=PASS")
+
+        # Actual prefill logits are flattened windows with row-specific starts.
+        device = torch.device("cuda:0")
+        starts = torch.tensor([128, 4096, 8192], dtype=torch.int32, device=device)
+        ends = torch.tensor([1500, 7000, 15000], dtype=torch.int32, device=device)
+        width = 16384
+        logits = torch.full(
+            (3, width), 1.0e30, dtype=torch.float32, device=device
+        )
+        ref = torch.full((3, TOPK), -1, dtype=torch.int32, device=device)
+        lens = ends - starts
+        for row in range(3):
+            start = int(starts[row].item())
+            end = int(ends[row].item())
+            n = end - start
+            logits[row, start:end] = _cluster_row(n, shift=29 * row + 7)
+            k = min(TOPK, n)
+            if k:
+                ref[row, :k] = (
+                    logits[row, start:end]
+                    .topk(k, largest=True, sorted=False)
+                    .indices.to(torch.int32)
+                    + start
+                )
+
+        from vllm.model_executor.layers.sparse_attn_indexer import (
+            _sm80_top_k_per_row_prefill,
+        )
+
+        out = torch.full((3, TOPK), -1, dtype=torch.int32, device=device)
+        old = os.environ.get("VLLM_SM80_PREFILL_TOPK_BACKEND")
+        os.environ["VLLM_SM80_PREFILL_TOPK_BACKEND"] = backend
+        try:
+            _sm80_top_k_per_row_prefill(logits, starts, ends, out, TOPK)
+        finally:
+            if old is None:
+                os.environ.pop("VLLM_SM80_PREFILL_TOPK_BACKEND", None)
+            else:
+                os.environ["VLLM_SM80_PREFILL_TOPK_BACKEND"] = old
+        torch.cuda.synchronize()
+        if not _same_selected_set(out, ref, lens):
+            print(f"{name}:nonzero_windows=FAIL")
+            return False
+        print(f"{name}:nonzero_windows=PASS")
+        return True
+    except Exception as exc:
+        print(f"{name}=ERROR:{type(exc).__name__}:{exc}")
+        return False
 
 
 # Mirrors the failure families from upstream vLLM #55314 and adds the deployed
@@ -161,22 +240,31 @@ def main() -> None:
 
     persistent_ok = _qualify("DECODE_PERSISTENT", _persistent)
     flashinfer_ok = _qualify("DECODE_FLASHINFER", _flashinfer)
+    torch_decode_ok = _qualify("DECODE_TORCH", _torch_decode)
 
     # Prefill has different row-start semantics, so validate the exact patched
-    # helper independently. Prefer stock vLLM when correct, then FlashInfer.
-    prefill_vllm_ok = _qualify(
-        "PREFILL_VLLM", lambda x, n: _prefill(x, n, "vllm")
-    )
-    prefill_flashinfer_ok = _qualify(
-        "PREFILL_FLASHINFER", lambda x, n: _prefill(x, n, "flashinfer")
-    )
+    # helper independently, including non-zero flattened windows.
+    prefill_vllm_ok = _qualify_prefill("PREFILL_VLLM", "vllm")
+    prefill_flashinfer_ok = _qualify_prefill("PREFILL_FLASHINFER", "flashinfer")
+    prefill_torch_ok = _qualify_prefill("PREFILL_TORCH", "torch")
 
-    decode_backend = (
-        "persistent" if persistent_ok else "flashinfer" if flashinfer_ok else "torch"
-    )
-    prefill_backend = (
-        "vllm" if prefill_vllm_ok else "flashinfer" if prefill_flashinfer_ok else "torch"
-    )
+    if persistent_ok:
+        decode_backend = "persistent"
+    elif flashinfer_ok:
+        decode_backend = "flashinfer"
+    elif torch_decode_ok:
+        decode_backend = "torch"
+    else:
+        raise RuntimeError("no correct decode Top-K backend qualified on this SM80 GPU")
+
+    if prefill_vllm_ok:
+        prefill_backend = "vllm"
+    elif prefill_flashinfer_ok:
+        prefill_backend = "flashinfer"
+    elif prefill_torch_ok:
+        prefill_backend = "torch"
+    else:
+        raise RuntimeError("no correct prefill Top-K backend qualified on this SM80 GPU")
 
     print(f"SM80_DECODE_TOPK_BACKEND={decode_backend}")
     print(f"SM80_PREFILL_TOPK_BACKEND={prefill_backend}")
