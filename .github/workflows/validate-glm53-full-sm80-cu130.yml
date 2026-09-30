@@ -251,6 +251,7 @@ jobs:
           grep -q 'def record_logical_topk_ready' \
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'topk_backend=self.indexer.indexer_op.topk_backend' "$ATTN"
+          grep -q 'SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD' "$MLAC"
           grep -q 'SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT' "$MLAC"
           grep -q 'block_stride_alignment: int | None = None' "$KVI"
           grep -q 'SM80_MLA_STRIDE_ALIGNMENTS' "$KVU"
@@ -300,6 +301,7 @@ jobs:
           grep -q 'index_rope_interleave=True' port/tests/sm80_glm53_full_kernel_smoke.py
           grep -q 'quantize_mqa=True' port/tests/sm80_glm53_full_kernel_smoke.py
           grep -q 'SM80_FUSED_Q_MQA_FP8_PACK=PASS' port/tests/sm80_glm53_full_kernel_smoke.py
+          grep -q 'SM80_SPARSE_MLA_METADATA_GUARD=PASS' port/tests/sm80_glm53_full_kernel_smoke.py
           ! grep -q 'interleave=False' port/tests/sm80_glm53_full_kernel_smoke.py
           grep -q -- '--kv-cache-dtype bfloat16' port/serve_glm53_full_tp16.sh
           grep -q '"cudagraph_mode":"NONE"' port/serve_glm53_full_tp16.sh
