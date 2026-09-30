@@ -479,13 +479,32 @@ def patch_topk_backend(text: str) -> str:
 
 
 def patch_mla_stride_alignment(text: str) -> str:
-    """Publish the physical-row alignment required by TRITON_MLA_SPARSE.
+    """Patch shared MLA capability routing and SM80 physical-row alignment."""
+    guard_marker = "SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD"
+    if guard_marker not in text:
+        old_guard = """    def _use_sparse_mha(self, attn_metadata: "MLACommonMetadata") -> bool:
+        if self.hisparse_cache is not None:
+            return False
+        prefill = attn_metadata.prefill
+"""
+        new_guard = """    def _use_sparse_mha(self, attn_metadata: "MLACommonMetadata") -> bool:
+        # SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD: sparse-only backends such as
+        # TRITON_MLA_SPARSE intentionally expose metadata without dense-prefill
+        # fields. Respect the same capability contract used during __init__
+        # before touching MLACommonMetadata.prefill.
+        if not (
+            self.impl.supports_dense_mha_prefill
+            and self.supports_dense_mha_prefill
+        ):
+            return False
+        if self.hisparse_cache is not None:
+            return False
+        prefill = attn_metadata.prefill
+"""
+        text = replace_once(
+            text, old_guard, new_guard, "MLA: sparse-only dense-prefill guard"
+        )
 
-    The sparse backend flattens a paged BF16 MLA cache into token rows via
-    flat_kv_row_view().  In a packed block layout the inter-block stride may
-    include other layers' pages, so the allocator must round that physical
-    stride to a whole MLA row.
-    """
     marker = "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT"
     if marker in text:
         return text
