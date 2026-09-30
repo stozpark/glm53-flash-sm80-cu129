@@ -46,5 +46,5 @@ PY
     grep -q mqa_q_fp8_storage "${VLLM_ROOT}/models/deepseek_v32/common/kernels.py"
     grep -q SM80_RAGGED_INDEXER_DECODE_FIX "${VLLM_ROOT}/model_executor/layers/sparse_attn_indexer.py"
     grep -q SM80_PREFILL_TOPK_RUNTIME_BACKEND "${VLLM_ROOT}/model_executor/layers/sparse_attn_indexer.py"
-    test "$(cat /opt/glm53-full-sm80/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260930-15"
+    test "$(cat /opt/glm53-full-sm80/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260930-16"
     echo GLM53_FULL_SM80_STATIC=PASS
