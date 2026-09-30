@@ -244,6 +244,109 @@ def _fp8_ue8m0_quantize(vals):
     return text
 
 def patch_sparse_indexer(text: str) -> str:
+    def patch_prefill_topk(text: str) -> str:
+        marker = "SM80_PREFILL_TOPK_RUNTIME_BACKEND"
+        if marker in text:
+            return text
+
+        text = replace_once(
+            text,
+            '"""Custom Sparse Attention Indexer layers."""\n\nimport torch\n',
+            '"""Custom Sparse Attention Indexer layers."""\n\nimport os\n\nimport torch\n',
+            "sparse indexer: os import for prefill top-k backend",
+        )
+
+        anchor = "MXFP4_BLOCK_SIZE = 32\n\n"
+        helper = r'''# SM80_PREFILL_TOPK_RUNTIME_BACKEND: the stock CUDA prefill selector is
+# retained when it validates on the actual A100.  If the one-time startup
+# differential probe finds a device/build-specific correctness issue, the same
+# SIF can switch to FlashInfer or an exact torch fallback without rebuilding.
+def _sm80_top_k_per_row_prefill(
+    logits: torch.Tensor,
+    row_starts: torch.Tensor,
+    row_ends: torch.Tensor,
+    topk_indices: torch.Tensor,
+    topk_tokens: int,
+) -> None:
+    backend = os.getenv("VLLM_SM80_PREFILL_TOPK_BACKEND", "vllm")
+    if backend == "vllm":
+        ops.top_k_per_row_prefill(
+            logits,
+            row_starts,
+            row_ends,
+            topk_indices,
+            logits.shape[0],
+            logits.stride(0),
+            logits.stride(1),
+            topk_tokens,
+        )
+        return
+
+    if backend == "flashinfer":
+        from flashinfer.topk import top_k_ragged_transform
+
+        starts = row_starts.contiguous()
+        lengths = (row_ends - row_starts).to(torch.int32).contiguous()
+        selected = top_k_ragged_transform(
+            logits,
+            starts,
+            lengths,
+            topk_tokens,
+            row_starts=starts,
+        )
+        topk_indices.copy_(selected)
+        return
+
+    if backend == "torch":
+        # Emergency exact fallback. This deliberately trades speed for
+        # correctness and bounded extra memory: process one row at a time
+        # instead of materializing a full [rows, width] boolean mask.
+        topk_indices.fill_(-1)
+        for row in range(logits.shape[0]):
+            start = int(row_starts[row].item())
+            end = int(row_ends[row].item())
+            k = min(topk_tokens, max(end - start, 0))
+            if k:
+                idx = logits[row, start:end].topk(
+                    k, dim=-1, largest=True, sorted=False
+                ).indices.to(torch.int32)
+                topk_indices[row, :k].copy_(idx + start)
+        return
+
+    raise RuntimeError(
+        "VLLM_SM80_PREFILL_TOPK_BACKEND must be vllm, flashinfer, or torch; "
+        f"got {backend!r}"
+    )
+
+
+'''
+        text = replace_once(
+            text, anchor, anchor + helper, "sparse indexer: prefill top-k helper"
+        )
+
+        old = """                ops.top_k_per_row_prefill(
+                    logits,
+                    cu_seqlen_ks,
+                    cu_seqlen_ke,
+                    topk_indices,
+                    num_rows,
+                    logits.stride(0),
+                    logits.stride(1),
+                    topk_tokens,
+                )
+"""
+        new = """                _sm80_top_k_per_row_prefill(
+                    logits,
+                    cu_seqlen_ks,
+                    cu_seqlen_ke,
+                    topk_indices,
+                    topk_tokens,
+                )
+"""
+        return replace_once(
+            text, old, new, "sparse indexer: runtime-selectable prefill top-k"
+        )
+
     def patch_ragged_decode(text: str) -> str:
         marker = "SM80_RAGGED_INDEXER_DECODE_FIX"
         if marker in text:
@@ -282,7 +385,7 @@ def patch_sparse_indexer(text: str) -> str:
 
     marker = "_sm80_fp8_fp4_mqa_logits"
     if marker in text:
-        return patch_ragged_decode(text)
+        return patch_prefill_topk(patch_ragged_decode(text))
 
     old_import = """from vllm.utils.deep_gemm import (
     fp8_fp4_mqa_logits,
@@ -457,25 +560,42 @@ def _sm80_fp8_fp4_paged_mqa_logits(
 
     if "has_deep_gemm()" in text:
         raise RuntimeError("sparse indexer: stale has_deep_gemm() remains")
-    return patch_ragged_decode(text)
+    return patch_prefill_topk(patch_ragged_decode(text))
 
 
 def patch_topk_backend(text: str) -> str:
-    """Backport upstream #58594 sparse-indexer Top-K backend propagation."""
+    """Patch DSA Top-K routing for the SM80 sparse-only MLA backend."""
     marker = "topk_backend=self.indexer.indexer_op.topk_backend"
-    if marker in text:
-        return text
-
-    old = """                skip_topk_buffer_clear=True,
+    if marker not in text:
+        old = """                skip_topk_buffer_clear=True,
             )
 """
-    new = """                skip_topk_buffer_clear=True,
+        new = """                skip_topk_buffer_clear=True,
                 topk_backend=self.indexer.indexer_op.topk_backend,
             )
 """
-    return replace_once(
-        text, old, new, "deepseek attention: sparse top-k backend"
-    )
+        text = replace_once(
+            text, old, new, "deepseek attention: sparse top-k backend"
+        )
+
+    short_marker = "SM80_SPARSE_ONLY_PREFILL_TOPK_FIX"
+    if short_marker not in text:
+        old = """            and current_platform.is_cuda()
+            and self.supports_dense_mha_prefill
+        )
+"""
+        new = """            and current_platform.is_cuda()
+            # SM80_SPARSE_ONLY_PREFILL_TOPK_FIX: only skip DSA scoring when
+            # both the layer and the selected backend can actually execute the
+            # dense-MHA short-prefill route. TRITON_MLA_SPARSE cannot.
+            and self.supports_dense_mha_prefill
+            and self.impl.supports_dense_mha_prefill
+        )
+"""
+        text = replace_once(
+            text, old, new, "deepseek attention: short-prefill Top-K capability"
+        )
+    return text
 
 
 def patch_mla_stride_alignment(text: str) -> str:
