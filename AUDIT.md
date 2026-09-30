@@ -7,7 +7,7 @@ Audit target: **full `zai-org/GLM-5.3`**, not GLM-5.3-Flash.
 - base image: vLLM 0.30.0 / CUDA 13.0
 - architecture: `GlmMoeDsaForCausalLM / glm_moe_dsa`
 - attention: DeepSeek-V3.2 DSA sparse MLA
-- port revision: `glm53-full-sm80-cu130-v030-r20260930-14`
+- port revision: `glm53-full-sm80-cu130-v030-r20260930-16`
 
 The old GLM-5.3-Flash/KPool audit is intentionally not used for this branch.
 
@@ -60,7 +60,7 @@ the heavier stage.
 - DSA index Q/K and the generic fused MQA-query pack use software E4M3FN byte
   encoding on SM80.
 - The complete `_fused_q_kernel` contains no native `tl.float8e4nv`
-  conversion after the r14 patch.
+  conversion after the r16 patch.
 - sparse MLA and indexer pages use an exact 64-token block size.
 - physical sparse-MLA indices use int64 address arithmetic for long context.
 
@@ -81,10 +81,23 @@ the heavier stage.
 - **#49844 avoidance**: vLLM 0.30 already classifies `GlmMoeDsaForCausalLM`
   as a breakable-CUDA-graph architecture and disables Inductor compilation for
   that path. Target A100 profiling exhausted the remaining HBM even before
-  serving, so the startup-safe r14 launcher explicitly selects
+  serving, so the startup-safe r16 launcher explicitly selects
   `cudagraph_mode=NONE`.
 - **#52500**: use the padded pack/unpack path for ragged warmup/mixed decode
   batches even when metadata incorrectly reports `requires_padding=False`.
+- **#52512 family / sparse-only backend guard**: short-prefill DSA scoring is
+  skipped only when both the layer and the selected attention implementation
+  can actually execute dense-MHA prefill. `TRITON_MLA_SPARSE` cannot, so it
+  always produces the Top-K consumed by sparse MQA.
+- **#59223**: persist a pending FP8 indexer-WK weight/scale pair across
+  consecutive `load_weights()` calls. This hardens normal loading and
+  reordering/streaming loaders against silent WK initialization loss.
+- **#55314 mitigation**: the v0.30 C++ `persistent_topk` kernel has an
+  upstream open correctness fix for oversized/tightly-clustered radix bins.
+  Rebuilding vLLM's compiled extension is deliberately avoided. Instead r16
+  qualifies the real A100 kernel before model load and selects
+  `persistent -> FlashInfer -> torch` for decode, with an independent
+  `vLLM -> FlashInfer -> torch` qualification for prefill.
 
 ## PP correctness
 
@@ -157,7 +170,7 @@ requirement for this port.
 
 ### #49845
 
-Upstream auto block-size selection fix. The r14 launcher does not pin
+Upstream auto block-size selection fix. The r16 launcher does not pin
 `--block-size`; the selected DSA/indexer backend advertises its exact
 64-token contract and vLLM resolves it automatically. Target-hardware logs
 confirm `DEEPSEEK_V32_INDEXER` selected block size 64.
@@ -180,7 +193,7 @@ dense prefill backend, but vLLM 0.30's `_use_sparse_mha()` still dereferences
 `attn_metadata.prefill` before checking whether a dense prefill path can
 exist.
 
-r14 adds a capability guard before the metadata access. Sparse-only backends
+r16 adds a capability guard before the metadata access. Sparse-only backends
 therefore return `False` immediately and continue through their top-k MQA
 path; no fake `prefill` object is added to the metadata schema. The
 pre-model-load smoke now invokes `_use_sparse_mha()` with a metadata object
@@ -206,7 +219,7 @@ Root cause: r10 made the index-Q/index-K quantizers SM80-safe but the
 `tl.float8e4nv` casts. The old GPU smoke only exercised
 `quantize_mqa=False`, so the gap escaped the preflight.
 
-r14 closes both sides of the issue:
+r16 closes both sides of the issue:
 
 - `--kv-cache-dtype bfloat16` is explicit in the A100 launcher, matching the
   `TRITON_MLA_SPARSE` BF16 main-KV contract and preventing FP8 query
@@ -237,7 +250,7 @@ warmup itself is too expensive for the full FP8 checkpoint on PP0.
 
 The intermediate `FULL_DECODE_ONLY / max_capture=32` mitigation was still
 not a sufficiently conservative bring-up contract: vLLM profiles CUDA-graph
-memory for every mode except `NONE`.  The r14 startup baseline is therefore:
+memory for every mode except `NONE`.  The r16 startup baseline is therefore:
 
 ```text
 cudagraph_mode = NONE
@@ -295,18 +308,23 @@ correctness fixes.
 | `v1/attention/backends/mla/indexer.py` | gate DeepGEMM by actual hardware support instead of importability |
 | `model_executor/layers/sparse_attn_indexer.py` | route prefill/decode logits to Triton on SM80; includes #48285 and #52500 correctness fixes |
 | `models/deepseek_v32/common/kernels.py` | make every active fused-Q/indexer FP8 store legal on SM80 while preserving FP8 byte semantics |
-| `models/deepseek_v32/attention.py` | backport #58594 Top-K backend propagation |
+| `models/deepseek_v32/attention.py` | backport #58594 Top-K backend propagation and prevent short-prefill scoring skips on the sparse-only SM80 backend |
+| `models/deepseek_v32/nvidia/model.py` | preserve FP8 indexer-WK weight/scale pairs across loader call boundaries (#59223) |
 | `model_executor/layers/attention/mla_attention.py` | guard sparse-only backends from dense-prefill metadata access and publish the packed-block row alignment required by the Triton reader |
 | `v1/kv_cache_interface.py`, `v1/core/kv_cache_utils.py` | carry and honor that physical block-stride alignment (#55528 lineage) |
 
 Explicitly **not** patched: PP pinned-buffer V1 fix #47644, global BlockTable,
 PIECEWISE KV-binding workarounds, GLM-5.3-Flash/KPool code, DeepSelect,
-speculative decoding, generic scheduler code, NCCL code, or model weight
-loading. #47522's Marlin packed-int32 prefill fix is already present in exact
+speculative decoding, generic scheduler code, or NCCL code. Model loading is
+changed only by the narrow #59223 pending-pair persistence backport. #47522's
+Marlin packed-int32 prefill fix is already present in exact
 vLLM 0.30.0 and is validated rather than patched.
 
-The SIF also contains the patch script, revision marker, and GPU smoke script
-for verification. Those files do not alter vLLM runtime behavior.
+The SIF also contains the patch script, revision marker, GPU smoke script, and
+a no-weight A100 Top-K qualification probe. The launcher runs the Top-K probe
+before model load, caches its backend decision per revision/GPU, and passes the
+selected decode backend through `--sparse-indexer-topk-backend`; prefill uses
+`VLLM_SM80_PREFILL_TOPK_BACKEND`.
 
 ## Source/CI validation
 
@@ -330,7 +348,9 @@ The workflow performs:
    - all 65,536 BF16 bit patterns;
 10. active-path native-FP8 exclusion checks;
 11. long-context int64 address checks;
-12. production launcher/SIF revision checks.
+12. production launcher/SIF revision checks;
+13. r16 adaptive Top-K wiring, short-prefill capability guard, and persistent
+    FP8 indexer-WK loader-state checks.
 
 Observed markers from the successful run:
 
@@ -351,19 +371,22 @@ CUDA13_PROFILE=PASS
 The source audit cannot validate:
 
 - CUDA/Triton JIT on SM80;
-- numerical parity of the five GPU smoke kernels on actual A100;
+- numerical parity of the GPU smoke kernels on actual A100;
+- A100 Top-K qualification result (persistent/FlashInfer/torch) for the
+  installed binary and driver stack;
 - Marlin checkpoint load/repack peak memory;
 - NCCL/Gloo initialization across the two physical nodes;
 - TP8 x PP2 full checkpoint initialization;
-- CUDA-graph performance on A100 (r14 intentionally runs graph-free after
+- CUDA-graph performance on A100 (r16 intentionally runs graph-free after
   target-hardware graph profiling exhausted HBM);
 - prefix-cache behavior with real requests;
 - runtime allocator fragmentation during 64K/128K prefills;
 - end-to-end generated-token correctness.
 
-The production launcher runs the A100 GPU smoke once per `PORT_REVISION` on
-each node before the expensive full-model load, caches a success stamp, and
-rejects a stale SIF by `PORT_REVISION`.
+The production launcher first runs the A100 Top-K differential qualification
+once per `PORT_REVISION`/GPU and caches the selected safe backends. It then
+runs the GPU kernel smoke once per revision/GPU before the expensive full-model
+load, caches a success stamp, and rejects a stale SIF by `PORT_REVISION`.
 
 ## Release gate
 
