@@ -34,7 +34,7 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-auto}"
-EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260930-14"
+EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260930-15"
 
 # Filled by the one-time A100 Top-K differential probe before vLLM starts.
 SPARSE_INDEXER_TOPK_BACKEND=""
@@ -152,7 +152,7 @@ from pathlib import Path
 
 assert version("vllm") == "0.30.0", version("vllm")
 revision = Path("/opt/glm53-full-sm80/PORT_REVISION").read_text().strip()
-assert revision == "glm53-full-sm80-cu130-v030-r20260930-14", revision
+assert revision == "glm53-full-sm80-cu130-v030-r20260930-15", revision
 root = Path("/usr/local/lib/python3.12/dist-packages/vllm")
 if not root.exists():
     import importlib.util
