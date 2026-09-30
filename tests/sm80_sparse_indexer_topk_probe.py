@@ -205,6 +205,10 @@ def _qualify_prefill(name: str, backend: str) -> bool:
 # Mirrors the failure families from upstream vLLM #55314 and adds the deployed
 # 131072-token ceiling. The 40-row cases exercise the large-batch selector.
 CASES: list[tuple[str, list[int], bool]] = [
+    # Early decode can have fewer valid keys than index_topk=2048.
+    ("short_512", [512], False),
+    ("short_2048", [2048], False),
+    ("short_2049", [2049], False),
     ("tight_5000", [5000], False),
     ("tight_9407", [9407], False),
     ("tight_17802", [17802], False),
