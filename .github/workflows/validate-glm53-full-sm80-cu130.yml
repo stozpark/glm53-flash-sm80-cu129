@@ -289,7 +289,7 @@ jobs:
           grep -q 'sm80_glm53_full_kernel_smoke.py' port/Singularity.glm53-full-sm80.def
           grep -q 'sm80_sparse_indexer_topk_probe.py' port/Singularity.glm53-full-sm80.def
           grep -q 'PORT_REVISION /opt/glm53-full-sm80/PORT_REVISION' port/Singularity.glm53-full-sm80.def
-          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260930-15"
+          test "$(cat port/PORT_REVISION)" = "glm53-full-sm80-cu130-v030-r20260930-16"
           grep -q 'VLLM_PP_LAYER_PARTITION' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'PP_LAYER_PARTITION:-42,36' port/serve_glm53_full_tp8_pp2.sh
           grep -q -- "--compilation-config '{\"cudagraph_mode\":\"NONE\"}'" port/serve_glm53_full_tp8_pp2.sh
@@ -306,7 +306,7 @@ jobs:
           ! grep -q -- '--enable-prefix-caching' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--env VLLM_USE_BREAKABLE_CUDAGRAPH' port/serve_glm53_full_tp8_pp2.sh
           ! grep -q -- '--env VLLM_KV_CACHE_LAYOUT' port/serve_glm53_full_tp8_pp2.sh
-          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260930-15"' port/serve_glm53_full_tp8_pp2.sh
+          grep -q 'EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260930-16"' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS' port/serve_glm53_full_tp8_pp2.sh
           grep -q 'return capability == DeviceCapability(8, 0)' \
             port/vendor/glm53-full-sm80/v1/attention/backends/mla/triton_mla_sparse.py
