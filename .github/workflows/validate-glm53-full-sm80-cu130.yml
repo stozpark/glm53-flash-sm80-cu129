@@ -183,6 +183,7 @@ jobs:
             vllm030/vllm/v1/attention/ops/mqa_logits_triton.py \
             vllm030/vllm/v1/attention/ops/triton_mla_sparse_kernel.py \
             port/tests/sm80_glm53_full_kernel_smoke.py \
+            port/tests/sm80_sparse_indexer_topk_probe.py \
             port/tests/validate_glm53_full_static.py \
             port/tests/test_fp8e4m3fn_reference.py
 
