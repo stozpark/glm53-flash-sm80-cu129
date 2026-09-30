@@ -15,9 +15,11 @@ No model weights are required.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import torch
 
+from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 from vllm.models.deepseek_v32.common import kernels as K
 from vllm.v1.attention.ops.mqa_logits_triton import (
     fp8_mqa_logits_triton,
@@ -99,6 +101,19 @@ def fp8_max_ulp(a: torch.Tensor, b: torch.Tensor) -> int:
 
 
 def main() -> None:
+    # Shared MLA must respect the sparse-only backend capability before
+    # touching dense-prefill metadata. XPUMLASparseMetadata intentionally has
+    # no .prefill field in v0.30.
+    sparse_only_layer = SimpleNamespace(
+        hisparse_cache=None,
+        impl=SimpleNamespace(supports_dense_mha_prefill=False),
+        supports_dense_mha_prefill=True,
+    )
+    assert MLAAttention._use_sparse_mha(
+        sparse_only_layer, SimpleNamespace()
+    ) is False
+    print("SM80_SPARSE_MLA_METADATA_GUARD=PASS")
+
     assert torch.cuda.is_available(), "CUDA is required"
     dev = torch.device("cuda:0")
     major, minor = torch.cuda.get_device_capability(dev)
