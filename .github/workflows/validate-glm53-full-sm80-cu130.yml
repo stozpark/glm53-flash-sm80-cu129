@@ -116,6 +116,7 @@ jobs:
               "vllm/model_executor/layers/sparse_attn_indexer.py",
               "vllm/models/deepseek_v32/attention.py",
               "vllm/models/deepseek_v32/common/kernels.py",
+              "vllm/models/deepseek_v32/nvidia/model.py",
               "vllm/model_executor/layers/attention/mla_attention.py",
               "vllm/v1/core/kv_cache_utils.py",
               "vllm/v1/kv_cache_interface.py",
@@ -138,6 +139,7 @@ jobs:
             -path '*/sparse_attn_indexer.py' -o \
             -path '*/deepseek_v32/attention.py' -o \
             -path '*/deepseek_v32/common/kernels.py' -o \
+            -path '*/deepseek_v32/nvidia/model.py' -o \
             -path '*/backends/mla/indexer.py' -o \
             -path '*/backends/registry.py' -o \
             -path '*/backends/mla/triton_mla_sparse.py' -o \
@@ -154,6 +156,7 @@ jobs:
             -path '*/sparse_attn_indexer.py' -o \
             -path '*/deepseek_v32/attention.py' -o \
             -path '*/deepseek_v32/common/kernels.py' -o \
+            -path '*/deepseek_v32/nvidia/model.py' -o \
             -path '*/backends/mla/indexer.py' -o \
             -path '*/backends/registry.py' -o \
             -path '*/backends/mla/triton_mla_sparse.py' -o \
@@ -255,6 +258,7 @@ jobs:
             vllm030/vllm/v1/attention/backends/mla/triton_mla_sparse.py
           grep -q 'topk_backend=self.indexer.indexer_op.topk_backend' "$ATTN"
           grep -q 'SM80_SPARSE_ONLY_PREFILL_TOPK_FIX' "$ATTN"
+          grep -q 'SM80_PERSIST_FP8_INDEXER_WK_PAIR' "$MODEL"
           grep -q 'SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD' "$MLAC"
           grep -q 'SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT' "$MLAC"
           grep -q 'block_stride_alignment: int | None = None' "$KVI"
