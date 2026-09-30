@@ -34,6 +34,7 @@ PY
     grep -q 'supports_dense_mha_prefill = False' "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py"
     grep -q 'return (KVCacheLayout.LBHNC,)' "${VLLM_ROOT}/v1/attention/backends/mla/triton_mla_sparse.py"
     grep -q 'topk_backend=self.indexer.indexer_op.topk_backend' "${VLLM_ROOT}/models/deepseek_v32/attention.py"
+    grep -q SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD "${VLLM_ROOT}/model_executor/layers/attention/mla_attention.py"
     grep -q SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT "${VLLM_ROOT}/model_executor/layers/attention/mla_attention.py"
     grep -q SM80_MLA_STRIDE_ALIGNMENTS "${VLLM_ROOT}/v1/core/kv_cache_utils.py"
     ! grep -q _sm80_pp_topk_relay_buf "${VLLM_ROOT}/models/deepseek_v32/nvidia/model.py"
