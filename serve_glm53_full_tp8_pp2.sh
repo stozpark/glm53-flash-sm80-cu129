@@ -36,6 +36,10 @@ PP_LAYER_PARTITION="${PP_LAYER_PARTITION:-42,36}"
 RUN_GPU_SMOKE="${RUN_GPU_SMOKE:-auto}"
 EXPECTED_PORT_REVISION="glm53-full-sm80-cu130-v030-r20260930-14"
 
+# Filled by the one-time A100 Top-K differential probe before vLLM starts.
+SPARSE_INDEXER_TOPK_BACKEND=""
+SM80_PREFILL_TOPK_BACKEND=""
+
 API_KEY="${API_KEY:-}"
 NET_IFACE="${NET_IFACE:-}"
 
@@ -98,7 +102,8 @@ preflight() {
     VLLM_USE_BREAKABLE_CUDAGRAPH \
     VLLM_USE_DEEP_GEMM \
     VLLM_MOE_USE_DEEP_GEMM \
-    VLLM_BATCH_INVARIANT; do
+    VLLM_BATCH_INVARIANT \
+    VLLM_SM80_PREFILL_TOPK_BACKEND; do
     [[ -z "${!var:-}" ]] || die "unset conflicting host variable: ${var}"
   done
 
@@ -168,6 +173,7 @@ checks = {
     ],
     root / "models/deepseek_v32/attention.py": [
         "topk_backend=self.indexer.indexer_op.topk_backend",
+        "SM80_SPARSE_ONLY_PREFILL_TOPK_FIX",
     ],
     root / "model_executor/layers/attention/mla_attention.py": [
         "SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD",
@@ -182,6 +188,7 @@ checks = {
     root / "model_executor/layers/sparse_attn_indexer.py": [
         "_sm80_fp8_fp4_mqa_logits",
         "SM80_RAGGED_INDEXER_DECODE_FIX",
+        "SM80_PREFILL_TOPK_RUNTIME_BACKEND",
     ],
 }
 for path, markers in checks.items():
@@ -189,6 +196,7 @@ for path, markers in checks.items():
     for marker in markers:
         assert marker in text, f"{path}: missing {marker}"
 assert Path("/opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py").exists()
+assert Path("/opt/glm53-full-sm80/sm80_sparse_indexer_topk_probe.py").exists()
 print("GLM53_FULL_SM80_SIF_RUNTIME_STATIC=PASS")
 PY
 }
@@ -212,6 +220,67 @@ run_gpu_smoke() {
     "${SIF_PATH}" \
     python3 /opt/glm53-full-sm80/sm80_glm53_full_kernel_smoke.py
   touch "${stamp}"
+}
+
+select_sparse_topk_backends() {
+  local rt first_gpu cache probe_output decode_backend prefill_backend tmp
+  rt="$(runtime_bin)"
+  first_gpu="${GPUS%%,*}"
+  cache="${RUN_DIR}/topk.${EXPECTED_PORT_REVISION}.gpu${first_gpu}.env"
+
+  if [[ ! -f "${cache}" ]]; then
+    echo "Qualifying sparse-indexer Top-K backends on physical GPU ${first_gpu}..."
+    probe_output="$(
+      "${rt}" exec --nv \
+        --env CUDA_VISIBLE_DEVICES="${first_gpu}" \
+        --env PYTHONUNBUFFERED=1 \
+        "${SIF_PATH}" \
+        python3 /opt/glm53-full-sm80/sm80_sparse_indexer_topk_probe.py
+    )"
+    printf '%s\n' "${probe_output}"
+
+    decode_backend="$(
+      printf '%s\n' "${probe_output}" |
+        awk -F= '$1=="SM80_DECODE_TOPK_BACKEND" {print $2}' |
+        tail -n 1
+    )"
+    prefill_backend="$(
+      printf '%s\n' "${probe_output}" |
+        awk -F= '$1=="SM80_PREFILL_TOPK_BACKEND" {print $2}' |
+        tail -n 1
+    )"
+
+    case "${decode_backend}" in
+      persistent|flashinfer|torch) ;;
+      *) die "Top-K probe returned invalid decode backend: ${decode_backend:-<empty>}" ;;
+    esac
+    case "${prefill_backend}" in
+      vllm|flashinfer|torch) ;;
+      *) die "Top-K probe returned invalid prefill backend: ${prefill_backend:-<empty>}" ;;
+    esac
+
+    tmp="${cache}.tmp.$"
+    {
+      printf 'SM80_DECODE_TOPK_BACKEND=%s\n' "${decode_backend}"
+      printf 'SM80_PREFILL_TOPK_BACKEND=%s\n' "${prefill_backend}"
+    } > "${tmp}"
+    mv "${tmp}" "${cache}"
+  fi
+
+  # shellcheck disable=SC1090
+  source "${cache}"
+  case "${SM80_DECODE_TOPK_BACKEND:-}" in
+    persistent|flashinfer|torch) ;;
+    *) die "invalid cached decode Top-K backend in ${cache}" ;;
+  esac
+  case "${SM80_PREFILL_TOPK_BACKEND:-}" in
+    vllm|flashinfer|torch) ;;
+    *) die "invalid cached prefill Top-K backend in ${cache}" ;;
+  esac
+
+  SPARSE_INDEXER_TOPK_BACKEND="${SM80_DECODE_TOPK_BACKEND}"
+  echo "decode_topk_backend=${SPARSE_INDEXER_TOPK_BACKEND}"
+  echo "prefill_topk_backend=${SM80_PREFILL_TOPK_BACKEND}"
 }
 
 build_args() {
@@ -263,6 +332,7 @@ run_server() {
   rt="$(runtime_bin)"
   host_ip="$(local_host_ip)"
   validate_sif_runtime
+  select_sparse_topk_backends
   run_gpu_smoke
   build_args
 
@@ -274,6 +344,9 @@ run_server() {
     # split starts PP1 on a shared-index layer (39); 42/36 starts it on the
     # next full-indexer layer and removes cross-stage Top-K state.
     --env VLLM_PP_LAYER_PARTITION="${PP_LAYER_PARTITION}"
+    # Prefill Top-K is selected independently from decode because vLLM 0.30
+    # uses a separate row-start-aware kernel for this path.
+    --env VLLM_SM80_PREFILL_TOPK_BACKEND="${SM80_PREFILL_TOPK_BACKEND}"
   )
 
   # Only pin NCCL/Gloo to an interface when the user asks for it. vLLM's
