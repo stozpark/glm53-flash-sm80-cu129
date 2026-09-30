@@ -307,6 +307,7 @@ build_args() {
     # BF16 main MLA KV and BF16 queries.
     --attention-config '{"backend":"TRITON_MLA_SPARSE"}'
     --kv-cache-dtype bfloat16
+    --sparse-indexer-topk-backend "${SPARSE_INDEXER_TOPK_BACKEND}"
 
     # Startup-first A100 baseline. CUDA-graph profiling/capture exhausted the
     # remaining 80GB headroom in target-hardware runs, so disable graphs until
