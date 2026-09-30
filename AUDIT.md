@@ -162,6 +162,31 @@ Upstream auto block-size selection fix. The r14 launcher does not pin
 64-token contract and vLLM resolves it automatically. Target-hardware logs
 confirm `DEEPSEEK_V32_INDEXER` selected block size 64.
 
+## Observed A100 sparse-MLA metadata mismatch
+
+A target-hardware warmup after the fused-Q fixes reached the shared sparse-MLA
+routing code and failed at:
+
+```text
+mla_attention.py::_use_sparse_mha
+    prefill = attn_metadata.prefill
+AttributeError: 'XPUMLASparseMetadata' object has no attribute 'prefill'
+```
+
+`TRITON_MLA_SPARSE` intentionally derives its lightweight metadata from
+`XPUMLASparseMetadata` and advertises `supports_dense_mha_prefill=False`.
+The shared MLA constructor already honors that capability by disabling the
+dense prefill backend, but vLLM 0.30's `_use_sparse_mha()` still dereferences
+`attn_metadata.prefill` before checking whether a dense prefill path can
+exist.
+
+r14 adds a capability guard before the metadata access. Sparse-only backends
+therefore return `False` immediately and continue through their top-k MQA
+path; no fake `prefill` object is added to the metadata schema. The
+pre-model-load smoke now invokes `_use_sparse_mha()` with a metadata object
+that deliberately has no `prefill` field and requires
+`SM80_SPARSE_MLA_METADATA_GUARD=PASS`.
+
 ## Observed A100 fused-Q SM80 compile failure
 
 A later target-hardware run progressed through backend resolution
@@ -271,7 +296,7 @@ correctness fixes.
 | `model_executor/layers/sparse_attn_indexer.py` | route prefill/decode logits to Triton on SM80; includes #48285 and #52500 correctness fixes |
 | `models/deepseek_v32/common/kernels.py` | make every active fused-Q/indexer FP8 store legal on SM80 while preserving FP8 byte semantics |
 | `models/deepseek_v32/attention.py` | backport #58594 Top-K backend propagation |
-| `model_executor/layers/attention/mla_attention.py` | publish sparse-MLA packed-block row alignment required by the Triton reader |
+| `model_executor/layers/attention/mla_attention.py` | guard sparse-only backends from dense-prefill metadata access and publish the packed-block row alignment required by the Triton reader |
 | `v1/kv_cache_interface.py`, `v1/core/kv_cache_utils.py` | carry and honor that physical block-stride alignment (#55528 lineage) |
 
 Explicitly **not** patched: PP pinned-buffer V1 fix #47644, global BlockTable,
