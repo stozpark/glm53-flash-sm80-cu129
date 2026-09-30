@@ -170,6 +170,7 @@ checks = {
         "topk_backend=self.indexer.indexer_op.topk_backend",
     ],
     root / "model_executor/layers/attention/mla_attention.py": [
+        "SM80_SPARSE_MLA_NO_DENSE_PREFILL_GUARD",
         "SM80_TRITON_MLA_BLOCK_STRIDE_ALIGNMENT",
     ],
     root / "v1/kv_cache_interface.py": [
